@@ -37,3 +37,6 @@ private*
 
 __pycache__/
 *.pyc
+
+# PlatformIO
+.pio/
