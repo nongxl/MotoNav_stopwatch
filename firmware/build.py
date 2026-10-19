@@ -5,7 +5,9 @@ import hashlib
 import json
 from pathlib import Path
 import re
+import shutil
 import subprocess
+import sys
 
 ROOT = Path(__file__).resolve().parent
 
@@ -73,10 +75,26 @@ def main():
     output = build / 'output'
     output.mkdir(parents=True, exist_ok=True)
     prefix_map = '-ffile-prefix-map=' + str(Path.home()) + '=/builder'
-    subprocess.run([args.cli, 'compile', '--jobs', str(args.jobs), '--libraries', str(ROOT / 'libraries'),
-                    '--build-path', str(build / 'build'), '--fqbn', board['fqbn'],
-                    '--build-property', 'compiler.c.extra_flags=' + prefix_map,
-                    '--build-property', 'compiler.cpp.extra_flags=' + prefix_map, '--output-dir', str(output), str(source)], check=True)
+
+    cli_cmd = shutil.which(args.cli) or args.cli
+    cmd = [cli_cmd, 'compile', '--jobs', str(args.jobs), '--libraries', str(ROOT / 'libraries'),
+           '--build-path', str(build / 'build'), '--fqbn', board['fqbn'],
+           '--build-property', 'compiler.c.extra_flags=' + prefix_map,
+           '--build-property', 'compiler.cpp.extra_flags=' + prefix_map, '--output-dir', str(output), str(source)]
+
+    try:
+        subprocess.run(cmd, check=True)
+    except FileNotFoundError:
+        print(f"\n[错误] 未找到 Arduino CLI 可执行文件: '{args.cli}'", file=sys.stderr)
+        print("请确保已安装 arduino-cli 并添加至系统环境变量 PATH，或使用 --cli 参数指定路径。", file=sys.stderr)
+        print("推荐安装方式:", file=sys.stderr)
+        print("  - 使用 Scoop:  scoop install arduino-cli", file=sys.stderr)
+        print("  - 使用 Winget: winget install Arduino.arduino-cli", file=sys.stderr)
+        print("安装后需安装 ESP32 Core 3.3.10:", file=sys.stderr)
+        print("  arduino-cli core update-index --additional-urls https://espressif.github.io/arduino-esp32/package_esp32_index.json", file=sys.stderr)
+        print("  arduino-cli core install esp32:esp32@3.3.10 --additional-urls https://espressif.github.io/arduino-esp32/package_esp32_index.json\n", file=sys.stderr)
+        sys.exit(1)
+
     print(package(output, board['dest'], version, board))
 
 
