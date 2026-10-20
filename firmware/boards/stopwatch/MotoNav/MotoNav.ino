@@ -2406,7 +2406,8 @@ void touchInit() {
 }
 
 // StopWatch：用户按键换页（与触摸手势等价）
-//   主页：A 键 → 天气页（等于往右滑），B 键 → 音乐页（等于往左滑）
+//   面对屏幕看：左侧是 A 键，右侧是 B 键
+//   主页：A 键(左) → 音乐页(page 2，从左滑入)，B 键(右) → 天气页(page 1，从右滑入)
 //   天气/音乐页：任意键 → 回主页（按进来方向的反向滑回，和手势一致）
 void buttonTick() {
   static bool lastA = true, lastB = true;
@@ -2416,15 +2417,15 @@ void buttonTick() {
   unsigned long now = millis();
   if (now - lastAt < 250) { lastA = a; lastB = b; return; }   // 防抖 + 连按间隔
   int key = 0;
-  if (!a && lastA) key = 1;
-  else if (!b && lastB) key = 2;
+  if (!a && lastA) key = 1;      // A 键 (左侧)
+  else if (!b && lastB) key = 2; // B 键 (右侧)
   lastAt = now; lastA = a; lastB = b;
   if (!key) return;
   if (sliding || callOn || pairOn || fxOn) return;   // 动画/来电/配对/特效进行中不响应（sliding 已覆盖拖动动画态）
-  // 按键侧的进入方向按"键在哪边、页面从哪边来"：A(左上)→天气从左，B(右上)→音乐从右；
-  // 回主页按进入方向的反向滑回
-  if (page == 0) showPageAnimated(key == 1 ? 1 : 2, key == 1 ? 1 : -1, 0);
-  else showPageAnimated(0, page == 1 ? -1 : 1, 0);
+  // 面对屏幕：左侧 A 键切音乐(从左滑入)，右侧 B 键切天气(从右滑入)
+  // 回主页按进入方向的反向滑回：从音乐返回向左滑(-1)，从天气返回向右滑(1)
+  if (page == 0) showPageAnimated(key == 1 ? 2 : 1, key == 1 ? 1 : -1, 0);
+  else showPageAnimated(0, page == 2 ? -1 : 1, 0);
 }
 
 bool touchDown = false;
