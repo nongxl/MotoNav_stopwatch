@@ -42,3 +42,6 @@ __pycache__/
 .pio/
 .vscode/
 compile_commands.json
+
+# Release outputs
+release/

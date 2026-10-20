@@ -4,7 +4,7 @@ Android / iOS 手机配合 ESP32-S3 圆屏的导航项目。当前 Android App 8
 
 > [!IMPORTANT]
 > **本仓库分支说明（独立维护）**
-> - **M5Stack Stopwatch 兼容**：本仓库为个人 Fork 版本，在原版基础上新增了对 **M5Stack Stopwatch**（240×240 触控圆屏，ESP32-S3 + SH8601 + PM1/IOE1）的全面硬件驱动与固件适配。
+> - **M5Stack Stopwatch 兼容**：本仓库为个人 Fork 版本，在原版基础上新增了对 **M5Stack Stopwatch**（466×466 触控圆屏，ESP32-S3 + SH8601 + PM1/IOE1）的全面硬件驱动与固件适配。
 > - **独立维护原则**：后续关于 M5Stack Stopwatch 及相关改动**仅在本个人仓库维护与提交，绝不向原作者上游仓库提交 PR 或引起改动**，确保不影响上游原项目。
 > - **上游特性同步**：本仓库通过独立脚本跟踪并同步上游关于 Android / iOS 端与通用导航协议的新特性。
 
@@ -87,11 +87,11 @@ Windows 下载独立的一键烧录 ZIP，完整解压后双击“一键烧录.b
 本仓库支持以下 ESP32-S3 圆屏设备：
 
 1. **M5Stack Stopwatch（本分支新增适配并独立维护）**
-   - **硬件规格**：ESP32-S3，1.2 英寸 240×240 圆形 AMOLED（SH8601）、FT3168 触控、PM1/AXP 电源管理、IOE1 扩展。
+   - **硬件规格**：ESP32-S3，1.43 英寸 466×466 圆形 AMOLED（SH8601）、FT3168 触控、PM1/AXP 电源管理、IOE1 扩展。
    - **源码位置**：`firmware/boards/stopwatch/MotoNav`
    - **适配特性**：
      - 基于 M5Unified / M5GFX 硬件库完整驱动，支持按键、触控手势及电源充放电管理。
-     - **抗锯齿旋转显示**：针对 240×240 物理面板实现双线性插值抗锯齿无级旋转（支持手机端圆屏方向调节）。
+     - **抗锯齿旋转显示**：针对 466×466 物理面板实现双线性插值抗锯齿无级旋转（支持手机端圆屏方向调节）。
      - **通信与配对握手**：适配优化 Bluedroid 协议栈与 Android App 的 BLE 配对就绪握手，避免等待验证死锁。
      - **构建系统**：配置独立的 PlatformIO 构建环境（`platformio.ini` 中的 `stopwatch` 环境）。
 2. **Waveshare ESP32-S3-Touch-AMOLED-1.75（上游原生支持）**
@@ -99,20 +99,33 @@ Windows 下载独立的一键烧录 ZIP，完整解压后双击“一键烧录.b
 
 ---
 
-## M5Stack Stopwatch 编译与烧录
+## M5Stack Stopwatch 编译、烧录与 M5Burner 发布包生成
 
-本分支为 M5Stack Stopwatch 配置了专属的 PlatformIO 构建环境：
-
+### 1. 本地快速编译与调试烧录
 ```bash
-# 1. 编译 M5Stack Stopwatch 固件
+# 编译固件
 pio run -e stopwatch
 
-# 2. 连接 Stopwatch 并一键烧录
+# 连接设备一键烧录
 pio run -e stopwatch -t upload
 
-# 3. 查看串口监控日志（波特率 115200）
+# 串口监控（115200 波特率）
 pio run -e stopwatch -t monitor
 ```
+
+### 2. 一键打包 M5Burner / 出厂全量烧录固件
+参照主流出厂固件发布规范，本项目提供了全自动合并工具，自动将 bootloader、partitions、boot_app0 与主程序固件整合为一个可从 `0x0000` 完整刷入的单镜像：
+
+- **Windows 用户**：直接双击根目录下的 **`build_and_merge.bat`**，即可一键全自动编译并合并出厂固件。
+- **命令行用户**：
+  ```bash
+  # 编译并生成合并固件
+  python tools/merge_firmware.py --env stopwatch --build
+  ```
+- **生成产物**位于 `release/` 目录：
+  - **`release/MotoNav_stopwatch_factory_0x0000.bin`**：**M5Burner 专用出厂发布包**。可直接在 M5Burner 自定义固件（Custom Burn）中选择，设置烧录地址 `0x0000`，或直接发布给其他 Stopwatch 用户一键线刷。
+  - **`release/MotoNav_stopwatch_app_ota_0x10000.bin`**：仅包含应用层主程序，供 OTA 或保留数据升级使用。
+- **本地出厂刷机验证**：连接设备后双击 **`flash_factory.bat`** 即可直接将合并固件写入设备。
 
 ---
 
