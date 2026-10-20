@@ -298,12 +298,14 @@ object BleLink {
         val msg = bytes?.toString(Charsets.UTF_8)?.trim() ?: return
         if(msg=="CAP,HID,1") { handler.post { sendEvent("#HM,0") }; return }
         if(msg=="CAP,BLD,1") {
+            markVerified()
             handler.post { if(!buildingsSupported) { buildingsSupported=true;MapFeeder.onBuildingCapability() } }
             return
         }
         val p = msg.split(',')
         if (p.size >= 3 && p[0] == "T" && p[1] == "M") { MusicBridge.onScreenEvent(p[2], p.drop(3).joinToString(",")); return }
         if (p.size >= 4 && p[0] == "S") {               // v2.0.1 圆屏帧率统计
+            markVerified()
             val mhz = if (p.size >= 5) "，屏幕速度 ${p[4]}MHz" else ""
             screenFps = p[1]
             if (p.size >= 5) screenMhz = p[4].toIntOrNull() ?: -1
@@ -315,6 +317,7 @@ object BleLink {
         }
         if (p.size >= 2 && p[0] == "T") { CallWatcher.onScreenTouch(p); return }   // v5.3 圆屏触屏接听
         if (p.size >= 3 && p[0] == "V") {                // v7.6 圆屏电量：V,百分比,充电,USB,mV
+            markVerified()
             val pct = p[1].toIntOrNull() ?: -1
             screenBatteryPct = pct
             screenBattery = if (pct < 0) "" else "$pct%" + (if (p[2] == "1") "⚡充电中" else "")
@@ -326,16 +329,11 @@ object BleLink {
             return
         }
         if (p.size >= 2 && p[0] == "U") {                // v6.4 圆屏：这台手机验证通过了
-            if (!verified) {
-                verified = true
-                pairHint = ""
-                gatt?.device?.address?.let { saveLast(it); skipAddr = "" }   // v7.8 记住这块是“我的圆屏”
-                staleCount = 0; needUnbond = false
-                handler.post { resendAll() }             // 验证前发的东西圆屏没收：全部重发
-            }
+            markVerified()
             return
         }
         if (p.size >= 12 && p[0] == "Q") {             // v5.8 圆屏每帧各步骤用时（0.1 毫秒）
+            markVerified()
             val names = listOf("底图", "道路", "路线", "红绿灯/电子眼/车头", "边缘渐暗", "北标/电子眼图标",
                 "外圈", "车速/测速牌", "车道", "底部箭头和距离", "提示")
             screenProf = "各步骤用时（毫秒/帧）：" + names.indices.joinToString("，") { i ->
@@ -344,9 +342,20 @@ object BleLink {
             return
         }
         if (p.size >= 3 && p[0] == "K") {
+            markVerified()
             val t = p[1].toIntOrNull() ?: return
             val id = p[2].toIntOrNull() ?: return
             MapFeeder.onAck(t, id)
+        }
+    }
+
+    private fun markVerified() {
+        if (!verified) {
+            verified = true
+            pairHint = ""
+            gatt?.device?.address?.let { saveLast(it); skipAddr = "" }   // v7.8 记住这块是“我的圆屏”
+            staleCount = 0; needUnbond = false
+            handler.post { resendAll() }             // 验证前发的东西圆屏没收：全部重发
         }
     }
 

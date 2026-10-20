@@ -2,6 +2,12 @@
 
 Android / iOS 手机配合 ESP32-S3 圆屏的导航项目。当前 Android App 8.3.21，iOS App 0.13.8，微雪圆屏固件 7.12.1。
 
+> [!IMPORTANT]
+> **本仓库分支说明（独立维护）**
+> - **M5Stack Stopwatch 兼容**：本仓库为个人 Fork 版本，在原版基础上新增了对 **M5Stack Stopwatch**（240×240 触控圆屏，ESP32-S3 + SH8601 + PM1/IOE1）的全面硬件驱动与固件适配。
+> - **独立维护原则**：后续关于 M5Stack Stopwatch 及相关改动**仅在本个人仓库维护与提交，绝不向原作者上游仓库提交 PR 或引起改动**，确保不影响上游原项目。
+> - **上游特性同步**：本仓库通过独立脚本跟踪并同步上游关于 Android / iOS 端与通用导航协议的新特性。
+
 iOS 工程已整合到 [ios/](ios/README.md)，包含 Xcode 工程、分享扩展、构建说明和功能对照。iOS 已移植高德截图底图、建筑处理和沿线离线地图；播放器支持和后台取图能力与 Android 存在差异，详见该说明。
 
 **本项目借助 AI 辅助开发，由个人进行需求设计、设备验证和迭代。仅供个人非商业使用与学习交流，禁止未经许可的商业使用及转售。**
@@ -16,7 +22,7 @@ iOS 工程已整合到 [ios/](ios/README.md)，包含 Xcode 工程、分享扩�
 
 [固件 7.12.1 下载与更新说明](https://github.com/zyn950929/MotoNav/releases/tag/firmware-v7.12.1) · [详细更新说明](docs/RELEASE-FIRMWARE-7.12.1.md)
 
-Windows 下载独立的一键烧录 ZIP，完整解压后双击“一键烧录.bat”；默认升级保留设置，首次完整刷写会整片擦除。仅适用于微雪 1.75，不适用于 1.85B 或 M5Stack StopWatch。
+Windows 下载独立的一键烧录 ZIP，完整解压后双击“一键烧录.bat”；默认升级保留设置，首次完整刷写会整片擦除。上述一键包仅适用于微雪 1.75 原生板型。若使用 M5Stack Stopwatch，请参考下文使用本仓库 PlatformIO 进行编译与烧录。
 
 已对照 Android 8.3.21 公开源码/分享打包版与 iOS 0.13.8 核对协议，504 项音乐/旋转检查、关机计时和烧录工具检查通过。7.12.1 在实物上完成启动与接 USB 五分钟关机观察；7.8.13 的纯电池五分钟关机已由用户确认。融合版的纯电池、两端手机交替连接和道路测试仍待验证。旧个人直装 Android 8.3.21 缺少切换 iPhone 后复位音乐模式的处理，公开源码/分享包已包含该处理。
 
@@ -78,9 +84,49 @@ Windows 下载独立的一键烧录 ZIP，完整解压后双击“一键烧录.b
 
 ## 支持的硬件
 
-- Waveshare ESP32-S3-Touch-AMOLED-1.75，466×466。
+本仓库支持以下 ESP32-S3 圆屏设备：
 
-本说明仅介绍上述 1.75 英寸板型，其余板型不列入当前支持范围。M5Stack StopWatch 不包含在本仓库。
+1. **M5Stack Stopwatch（本分支新增适配并独立维护）**
+   - **硬件规格**：ESP32-S3，1.2 英寸 240×240 圆形 AMOLED（SH8601）、FT3168 触控、PM1/AXP 电源管理、IOE1 扩展。
+   - **源码位置**：`firmware/boards/stopwatch/MotoNav`
+   - **适配特性**：
+     - 基于 M5Unified / M5GFX 硬件库完整驱动，支持按键、触控手势及电源充放电管理。
+     - **抗锯齿旋转显示**：针对 240×240 物理面板实现双线性插值抗锯齿无级旋转（支持手机端圆屏方向调节）。
+     - **通信与配对握手**：适配优化 Bluedroid 协议栈与 Android App 的 BLE 配对就绪握手，避免等待验证死锁。
+     - **构建系统**：配置独立的 PlatformIO 构建环境（`platformio.ini` 中的 `stopwatch` 环境）。
+2. **Waveshare ESP32-S3-Touch-AMOLED-1.75（上游原生支持）**
+   - 466×466 圆屏，固件位于 `firmware/boards/175/MotoNav`。
+
+---
+
+## M5Stack Stopwatch 编译与烧录
+
+本分支为 M5Stack Stopwatch 配置了专属的 PlatformIO 构建环境：
+
+```bash
+# 1. 编译 M5Stack Stopwatch 固件
+pio run -e stopwatch
+
+# 2. 连接 Stopwatch 并一键烧录
+pio run -e stopwatch -t upload
+
+# 3. 查看串口监控日志（波特率 115200）
+pio run -e stopwatch -t monitor
+```
+
+---
+
+## 分支维护与上游同步说明
+
+- **分支隔离原则**：本仓库作为个人适配版本，所有针对 M5Stack Stopwatch 的代码、脚本与文档改动**仅在本仓库维护并提交**，不向上游仓库发起 Pull Request，绝不影响或干扰上游主项目的开发规划。
+- **获取上游更新**：当上游发布了新的 Android / iOS App 或协议更新时，可通过仓库内提供的脚本一键拉取并 rebase：
+  ```powershell
+  # 在项目根目录下执行 PowerShell 脚本
+  .\scripts\sync-upstream.ps1
+  ```
+  该脚本会自动同步上游 `main` 分支最新提交，并将本分支的改动优雅 rebase 到最新代码之上。
+
+---
 
 ## 功能
 

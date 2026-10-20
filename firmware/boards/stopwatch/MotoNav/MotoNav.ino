@@ -243,6 +243,7 @@
 #define STAGE_NEAR_M 100   // 小于等于这个距离：橙色警示
 
 #include <Arduino.h>
+#include <nvs_flash.h>
 #include "Arduino_GFX_Library.h"
 #include "pin_config.h"
 #include <Wire.h>
@@ -266,9 +267,8 @@ String pendingBootAck;
 #include "host/ble_store.h"   // v6.5 记住的手机
 #endif
 
-// ===== M5Stack Stopwatch 面板与硬件抽象实例化 =====
+// ===== M5Stack Stopwatch 面板与硬件抽象实例化 (基于 M5Unified) =====
 BoardStopwatchPanel stopwatchPanel;
-Arduino_CO5300 *panel = stopwatchPanel.panel;
 BoardStopwatchHal stopwatchHal;
 PortScale portScale;
 struct TextImg;    // Arduino 自动生成的函数声明需要先认识文字图片类型。
@@ -276,6 +276,21 @@ void flushLogicalFrame(const uint16_t *fb);
 void boardBrightness(uint8_t value) {
   stopwatchPanel.setBrightness(value);
 }
+
+// 供 MotoNav SwapCanvas 使用的显示后端代理
+class DummyDisplay : public Arduino_TFT {
+public:
+  DummyDisplay() : Arduino_TFT(nullptr, -1, 0, false, LCD_WIDTH, LCD_HEIGHT, 0, 0, 0, 0) {}
+  bool begin(int32_t speed = 0) override { return true; }
+  void tftInit() override {}
+  void writeAddrWindow(int16_t x, int16_t y, uint16_t w, uint16_t h) override {}
+  void writePixelPreclipped(int16_t x, int16_t y, uint16_t color) override {}
+  void writeFastHLine(int16_t x, int16_t y, int16_t w, uint16_t color) override {}
+  void writeFastVLine(int16_t x, int16_t y, int16_t h, uint16_t color) override {}
+  void writeFillRectPreclipped(int16_t x, int16_t y, int16_t w, int16_t h, uint16_t color) override {}
+};
+static DummyDisplay dummyDisplay;
+Arduino_TFT *panel = &dummyDisplay;
 // 先画在内存里的“画布”上，画完再一次性推到屏幕（需要 PSRAM：OPI PSRAM）
 // v2.2：可以切换画布内存的画布，用来做双缓冲
 class SwapCanvas : public Arduino_Canvas {
@@ -410,6 +425,7 @@ volatile bool pairLocked = false;     // 不在允许配对的时间：不显示
 volatile bool pairDone = false;       // 配对结束（成功或失败）
 volatile bool pairOk = false;
 int authNotifies = 0;                 // "U,1" 已经发了几次
+unsigned long lastAuthNotifyAt = 0;   // 上次发送 "U,1" 的时间戳
 
 int bondCount() {
   int n = 0;
@@ -430,14 +446,14 @@ class SecCB : public BLESecurityCallbacks {
 #if defined(CONFIG_NIMBLE_ENABLED)
   void onAuthenticationComplete(ble_gap_conn_desc *d) {
     bool ok = d && d->sec_state.encrypted && d->sec_state.authenticated;
-    if (ok) { bleAuthed = true; bleAuthAt = millis(); authNotifies = 0; }
+    if (ok) { bleAuthed = true; bleAuthAt = millis(); authNotifies = 0; lastAuthNotifyAt = 0; }
     pairOk = ok;
     pairDone = true;
   }
 #else
   void onAuthenticationComplete(esp_ble_auth_cmpl_t cmpl) {
     bool ok = cmpl.success;
-    if (ok) { bleAuthed = true; bleAuthAt = millis(); authNotifies = 0; }
+    if (ok) { bleAuthed = true; bleAuthAt = millis(); authNotifies = 0; lastAuthNotifyAt = 0; }
     pairOk = ok;
     pairDone = true;
   }
@@ -447,9 +463,15 @@ class SecCB : public BLESecurityCallbacks {
 class ServerCB : public BLEServerCallbacks {
   void onConnect(BLEServer *s) {
     bleConnected = true;
+#if defined(CONFIG_NIMBLE_ENABLED)
     bleAuthed = false;
+#else
+    bleAuthed = true;                   // Bluedroid 平台无 NimBLE 绑定存储机制，连上即视为就绪
+#endif
     bleConnAt = millis();
+    bleAuthAt = millis();
     authNotifies = 0;
+    lastAuthNotifyAt = 0;
   }
 #if defined(CONFIG_NIMBLE_ENABLED)
   void onConnect(BLEServer *s, ble_gap_conn_desc *desc) { if (desc) bleConnHandle = desc->conn_handle; }
@@ -458,6 +480,7 @@ class ServerCB : public BLEServerCallbacks {
     bleConnected = false;
     bleAuthed = false;
     bleConnHandle = 0xFFFF;
+    lastAuthNotifyAt = 0;
     BLEDevice::startAdvertising();  // 断开后重新广播，方便手机重连
   }
 };
@@ -552,22 +575,8 @@ void saveRotIfDue() {
 }
 
 bool fastFlushInit() {
-  spi_device_interface_config_t dc;
-  memset(&dc, 0, sizeof(dc));
-  dc.command_bits = 8;
-  dc.address_bits = 24;
-  dc.mode = 0;
-  dc.clock_source = SPI_CLK_SRC_DEFAULT;
-  dc.clock_speed_hz = qspiMHz * 1000000;
-  dc.spics_io_num = -1;                   // 片选自己控制（和屏幕库一样）
-  dc.flags = SPI_DEVICE_HALFDUPLEX;
-  dc.queue_size = 2;
-  if (spi_bus_add_device(SPI2_HOST, &dc, &fastDev) != ESP_OK) { fastDev = nullptr; return false; }
-  for (int i = 0; i < 2; i++) {
-    fastBuf[i] = (uint8_t *)heap_caps_aligned_alloc(16, FAST_PIX * 2, MALLOC_CAP_DMA);
-    if (!fastBuf[i]) { fastDev = nullptr; return false; }
-  }
-  return true;
+  fastDev = nullptr;
+  return false;
 }
 
 // v7.7 RGB565 拆成 0x0GGRRBB 形式（绿、红、蓝之间留空），一次乘法就能三个颜色一起按权重混合
@@ -601,21 +610,74 @@ void fastPush(const uint16_t *fb) {
 }
 
 void flushLogicalFrame(const uint16_t* fb) {
-  if(!fb)return;
-  if(fastDev){fastPush(fb);return;}
-  // 标准刷屏和低内存路径也走相同缩放，不能把 466 像素直接写到 360 像素面板。
-  static uint16_t* physical=nullptr;
-  if(!physical)physical=(uint16_t*)ps_malloc(PANEL_WIDTH*PANEL_HEIGHT*2);
-  if(physical) {
-    for(int y=0;y<PANEL_HEIGHT;y++)for(int x=0;x<PANEL_WIDTH;x++)physical[y*PANEL_WIDTH+x]=portScale.pixel(fb,x,y,screenRot,rotFree,rotCos,rotSin);
-    panel->draw16bitRGBBitmap(0,0,physical,PANEL_WIDTH,PANEL_HEIGHT);
-  }else {
-    uint16_t row[PANEL_WIDTH];
-    for(int y=0;y<PANEL_HEIGHT;y++) {
-      for(int x=0;x<PANEL_WIDTH;x++)row[x]=portScale.pixel(fb,x,y,screenRot,rotFree,rotCos,rotSin);
-      panel->draw16bitRGBBitmap(0,y,row,PANEL_WIDTH,1);
+  if (!fb) return;
+  int16_t ox = (M5.Display.width() - LCD_WIDTH) / 2;
+  int16_t oy = (M5.Display.height() - LCD_HEIGHT) / 2;
+  if (ox < 0) ox = 0;
+  if (oy < 0) oy = 0;
+
+  M5.Display.startWrite();
+  if (!rotFree && screenRot == 0) {
+    // 0° 无旋转：整帧最高效直接推送
+    M5.Display.pushImage(ox, oy, LCD_WIDTH, LCD_HEIGHT, (const uint16_t*)fb);
+  } else if (!rotFree) {
+    // 90° / 180° / 270° 快速坐标映射旋转
+    static uint16_t lineBuf[LCD_WIDTH];
+    const int W = LCD_WIDTH;
+    const uint32_t N = (uint32_t)LCD_WIDTH * LCD_HEIGHT;
+    for (int py = 0; py < W; py++) {
+      if (screenRot == 2) {
+        for (int px = 0; px < W; px++) {
+          lineBuf[px] = fb[N - 1 - (py * W + px)];
+        }
+      } else if (screenRot == 1) {
+        for (int px = 0; px < W; px++) {
+          lineBuf[px] = fb[(W - 1 - px) * W + py];
+        }
+      } else { // screenRot == 3
+        for (int px = 0; px < W; px++) {
+          lineBuf[px] = fb[px * W + (W - 1 - py)];
+        }
+      }
+      M5.Display.pushImage(ox, oy + py, W, 1, lineBuf);
+    }
+  } else {
+    // v6.4 任意角度双线性插值抗锯齿旋转
+    static uint16_t lineBuf[LCD_WIDTH];
+    const int W = LCD_WIDTH, C = LCD_WIDTH / 2;
+    for (int py = 0; py < W; py++) {
+      int hw = rotSpan[py];
+      int xs = C - hw, xe = C + hw;
+      int dy2 = 2 * py - (W - 1);
+      int dx2 = -(W - 1);
+      int32_t fx = ((dx2 * rotCos + dy2 * rotSin) >> 1) + ((W - 1) << 15) + 32768;
+      int32_t fy = ((-dx2 * rotSin + dy2 * rotCos) >> 1) + ((W - 1) << 15) + 32768;
+      for (int px = 0; px < W; px++) {
+        uint16_t v = 0;
+        if (px >= xs && px <= xe) {
+          int32_t bx = fx - 32768, by = fy - 32768;
+          int sx = bx >> 16, sy = by >> 16;
+          if ((unsigned)sx < (unsigned)(W - 1) && (unsigned)sy < (unsigned)(W - 1)) {
+            const uint16_t *r0 = fb + sy * W + sx, *r1 = r0 + W;
+            uint32_t ax = (bx >> 11) & 31, ay = (by >> 11) & 31;
+            uint32_t a = rgbSpread(r0[0]), b = rgbSpread(r0[1]), c = rgbSpread(r1[0]), d = rgbSpread(r1[1]);
+            uint32_t top = ((a * (32 - ax) + b * ax) >> 5) & 0x07E0F81Fu;
+            uint32_t bot = ((c * (32 - ax) + d * ax) >> 5) & 0x07E0F81Fu;
+            uint32_t m = ((top * (32 - ay) + bot * ay) >> 5) & 0x07E0F81Fu;
+            v = (uint16_t)(m | (m >> 16));
+          } else {
+            int nx = fx >> 16, ny = fy >> 16;
+            if ((unsigned)nx < (unsigned)W && (unsigned)ny < (unsigned)W) v = fb[ny * W + nx];
+          }
+        }
+        lineBuf[px] = v;
+        fx += rotCos;
+        fy -= rotSin;
+      }
+      M5.Display.pushImage(ox, oy + py, W, 1, lineBuf);
     }
   }
+  M5.Display.endWrite();
 }
 
 void flushTask(void *arg) {
@@ -625,6 +687,7 @@ void flushTask(void *arg) {
     flushLogicalFrame(flushSrc);
     flushMsAcc += millis() - t0; flushCnt++;
     xSemaphoreGive(flushDone);
+    vTaskDelay(1); // 让出 CPU 0 调度给 IDLE0 与系统看门狗，彻底解决 task_wdt 崩溃
   }
 }
 
@@ -664,7 +727,7 @@ void initDoubleBuffer() {
   flushReq = xSemaphoreCreateBinary();
   flushDone = xSemaphoreCreateBinary();
   xSemaphoreGive(flushDone);
-  xTaskCreatePinnedToCore(flushTask, "flush", 4096, nullptr, 2, nullptr, 0);
+  xTaskCreatePinnedToCore(flushTask, "flush", 8192, nullptr, 2, nullptr, 0);
 }
 
 // ================= 基础画图工具 =================
@@ -2189,7 +2252,9 @@ void touchPoll() {
   static unsigned long lastPoll = 0;
   unsigned long now = millis();
   if (!touchOK) return;
+#if TP_INT >= 0
   if (!touchIrq && !touchDown && !callOn) return;
+#endif
   if (now - lastPoll < 12) return;
   lastPoll = now;
   touchIrq = false;
@@ -3828,10 +3893,11 @@ void batPoll() {
 
 void sendPendingAck() {
   if (!txChar || !bleConnected || !bleAuthed) return;    // v6.5 没通过验证的手机什么都不发
-  // v6.5 告诉手机“验证通过了”：连上后 0.3 / 1.5 / 4 秒各发一次（手机订阅通知可能比加密晚一点）
-  static const uint16_t uAt[3] = {300, 1500, 4000};
-  if (authNotifies < 3 && millis() - bleAuthAt > uAt[authNotifies]) {
+  // v6.5 告诉手机“验证通过了”：连上后多次发送，覆盖手机端协商MTU、PHY与订阅CCCD的时间窗口
+  static const uint16_t uAt[5] = {300, 1500, 3500, 6500, 10000};
+  if (authNotifies < 5 && millis() - bleAuthAt > uAt[authNotifies]) {
     authNotifies++;
+    lastAuthNotifyAt = millis();
     txChar->setValue((uint8_t *)"U,1", 3);
     txChar->notify();
   }
@@ -8678,7 +8744,16 @@ void handleText(const String &m) {
     }
     return;
   }
-  if (m == "P") return;                                 // 心跳
+  if (m == "P") {
+    // 手机发送心跳，说明链路已就绪。若已通过验证，确保向手机确认 U,1（解决手机端订阅较慢错过初始广播的问题）
+    if (bleAuthed && txChar && (authNotifies < 10 || millis() - lastAuthNotifyAt > 3000)) {
+      authNotifies++;
+      lastAuthNotifyAt = millis();
+      txChar->setValue((uint8_t *)"U,1", 3);
+      txChar->notify();
+    }
+    return;                                 // 心跳
+  }
   if (m == "C") { stopArriveFx(); progReset(); resetNavState(); drawWaiting(WAIT_READY); return; }
 
   if (m.startsWith("#v,")) { speedKmh = m.substring(3).toInt(); navDirty = true; return; }
@@ -8939,6 +9014,12 @@ void handleText(const String &m) {
       navAngle = NAN;
     }
     inNav = true;
+    if (bleAuthed && txChar && authNotifies < 8 && millis() - lastAuthNotifyAt > 2000) {
+      authNotifies++;
+      lastAuthNotifyAt = millis();
+      txChar->setValue((uint8_t *)"U,1", 3);
+      txChar->notify();
+    }
     updateRingTarget();
     navDirty = true;
   }
@@ -8946,6 +9027,11 @@ void handleText(const String &m) {
 
 void handleMessage(const uint8_t *d, int n) {
   lastRxMs = millis();
+  if (!bleAuthed) {
+    bleAuthed = true;
+    bleAuthAt = millis();
+    authNotifies = 0;
+  }
   if (staleShown) { staleShown = false; navDirty = true; }   // 收到任何消息，清掉数据中断提示
   if (d[0] == 'B') { handleBitmap(d, n); return; }
   if (d[0] == 'M') { handleBulk(d, n); return; }     // v2.0 地图块 / 路线
@@ -8974,6 +9060,12 @@ void setup() {
   makeBleName();                                       // v7.0 先算好蓝牙名（首页要显示）
   Serial.begin(115200);
   Serial.setTxTimeoutMs(0);   // 没打开串口监视器时打印不等待（v1.2 的修复）
+  esp_err_t nvsRet = nvs_flash_init();
+  if (nvsRet == ESP_ERR_NVS_NO_FREE_PAGES || nvsRet == ESP_ERR_NVS_NEW_VERSION_FOUND) {
+    nvs_flash_erase();
+    nvs_flash_init();
+  }
+  stopwatchPanel.init();
   stopwatchHal.init();
   touchInit();                                         // v5.2 触摸屏
   batInit();                                           // v6.8 电源芯片（电量）
@@ -9065,6 +9157,7 @@ void setup() {
 }
 
 void loop() {
+  M5.update();
   saveRotIfDue();                                      // v6.4
   // v6.5 连上 60 秒还没通过验证（不是自己的手机）：断开，让自己的手机能连
 #if defined(CONFIG_NIMBLE_ENABLED)
