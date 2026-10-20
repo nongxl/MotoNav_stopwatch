@@ -1,4 +1,4 @@
-# ESP32 16MB 分区方案 (与 app3M_fat9M_16MB 完全一致)
+# ESP32 16MB Partition Table (matches app3M_fat9M_16MB)
 # Name,   Type, SubType, Offset,   Size,     Flags
 nvs,      data, nvs,     0x9000,   0x5000,
 otadata,  data, ota,     0xe000,   0x2000,

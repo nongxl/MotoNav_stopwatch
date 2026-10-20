@@ -10,7 +10,7 @@
 class BoardStopwatchPanel {
 public:
   Arduino_DataBus *bus = nullptr;
-  Arduino_GFX *panel = nullptr;
+  Arduino_TFT *panel = nullptr;
   bool backlightPWM = false;
 
   BoardStopwatchPanel() {

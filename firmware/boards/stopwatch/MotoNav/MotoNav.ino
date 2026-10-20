@@ -268,7 +268,7 @@ String pendingBootAck;
 
 // ===== M5Stack Stopwatch 面板与硬件抽象实例化 =====
 BoardStopwatchPanel stopwatchPanel;
-Arduino_GFX *panel = stopwatchPanel.panel;
+Arduino_TFT *panel = stopwatchPanel.panel;
 BoardStopwatchHal stopwatchHal;
 PortScale portScale;
 struct TextImg;    // Arduino 自动生成的函数声明需要先认识文字图片类型。
@@ -430,6 +430,13 @@ class SecCB : public BLESecurityCallbacks {
 #if defined(CONFIG_NIMBLE_ENABLED)
   void onAuthenticationComplete(ble_gap_conn_desc *d) {
     bool ok = d && d->sec_state.encrypted && d->sec_state.authenticated;
+    if (ok) { bleAuthed = true; bleAuthAt = millis(); authNotifies = 0; }
+    pairOk = ok;
+    pairDone = true;
+  }
+#else
+  void onAuthenticationComplete(esp_ble_auth_cmpl_t cmpl) {
+    bool ok = cmpl.success;
     if (ok) { bleAuthed = true; bleAuthAt = millis(); authNotifies = 0; }
     pairOk = ok;
     pairDone = true;
@@ -2148,7 +2155,6 @@ unsigned long callAt = 0, callSeenAt = 0;
 
 // v5.2 触屏接电话：按住任意位置 HOLD_MS 毫秒 → 发 "T,A" 给手机（v6.9 800 → 200）
 #define HOLD_MS 200
-TouchDrvCST816 touch;
 bool touchOK = false;
 unsigned long touchHoldAt = 0, touchLastSeen = 0;
 float touchHold = 0;                 // 0~1 按住的进度
@@ -2162,10 +2168,11 @@ volatile bool touchIrq = false;
 void IRAM_ATTR onTouchIrq() { touchIrq = true; }
 
 void touchInit() {
-  touch.setPins(TP_RESET, TP_INT);
-  touchOK = touch.begin(Wire, CST816_SLAVE_ADDRESS, IIC_SDA, IIC_SCL);
-  Serial.println(touchOK ? "touch ok" : "touch not found");
-  if (touchOK) { touch.disableAutoSleep();attachInterrupt(TP_INT, onTouchIrq, FALLING); }   // v5.3
+  stopwatchHal.initTouch();
+  touchOK = stopwatchHal.touchOK;
+  if (touchOK && TP_INT >= 0) {
+    attachInterrupt(TP_INT, onTouchIrq, FALLING);
+  }
 }
 
 bool touchDown = false;
@@ -3801,20 +3808,14 @@ void batPoll() {
   unsigned long now = millis();
   if (batAt && now - batAt < 5000) return;
   batAt = now;
-  if(!batteryGauge.refresh())return;
-  int voltage=batteryGauge.getVoltage();
-  bool present=batteryGauge.getBatteryStatus().isBatteryPresent() && voltage>=2000 && voltage<=5000;
-  int pct=present?(int)batteryGauge.getStateOfCharge():-1;
-  if(pct>100)pct=-1;
-  if(present)batMv=voltage;else batMv=0;
-  static int missCnt=0;
-  if(pct<0){if(batPct>=0 && ++missCnt<3){pct=batPct;present=true;}}
-  else missCnt=0;
-  bool chg=present && batteryGauge.isCharging();
-  // BQ27220 没有独立 VBUS 状态；只能在确认充电时报告外部供电。
-  bool usb=chg;
+  int pct = stopwatchHal.getBatteryPct();
+  bool present = pct >= 0;
+  bool chg = false;
+  bool usb = false;
+  int voltage = 4000;
+  int batMv_now = present ? voltage : 0;
   bool changed = pct != batPct || chg != batChg || usb != usbIn;
-  batPct = pct; batChg = chg; usbIn = usb;
+  batPct = pct; batChg = chg; usbIn = usb; batMv = batMv_now;
   if (changed) {
     if (onWaitScreen && page == 0 && !sliding) drawStatus();        // v7.2 只重画状态栏
     else if (inNav) navDirty = true;
@@ -9034,9 +9035,13 @@ void setup() {
   {
     BLESecurity *sec = new BLESecurity();                 // 构造时设好“交换加密密钥和身份密钥”（手机换地址也认得出）
     sec->setCapability(ESP_IO_CAP_OUT);                   // 圆屏只能显示，不能输入
+#if defined(CONFIG_NIMBLE_ENABLED)
     sec->setAuthenticationMode(true, true, true);         // 绑定、防中间人、安全连接
     sec->setPassKey(false);                               // 随机配对码
     sec->regenPassKeyOnConnect(true);                     // 每次配对重新随机
+#else
+    sec->setAuthenticationMode(ESP_LE_AUTH_REQ_SC_MITM_BOND);
+#endif
     BLEDevice::setSecurityCallbacks(new SecCB());
   }
   BLEServer *server = BLEDevice::createServer();

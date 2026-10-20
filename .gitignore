@@ -40,3 +40,5 @@ __pycache__/
 
 # PlatformIO
 .pio/
+.vscode/
+compile_commands.json

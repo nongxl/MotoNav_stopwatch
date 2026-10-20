@@ -3,7 +3,7 @@
 #include <Wire.h>
 #include "pin_config.h"
 #include "PortScale.h"
-#include "TouchDrvFT6X36.hpp"
+#include "TouchDrv.hpp"
 
 /**
  * M5Stack Stopwatch 硬件抽象层 (HAL)
@@ -11,7 +11,7 @@
  */
 class BoardStopwatchHal {
 public:
-  TouchDrvFT6X36 touch;
+  TouchDrvCST816 touch;
   bool touchOK = false;
   int batPercentage = -1;
   int lastEncoderPos = 0;
@@ -24,14 +24,19 @@ public:
   }
 
   // ----------------------------------------------------------------------------
-  // 触摸驱动
+  // 触摸驱动 (CST820 / CST816)
   // ----------------------------------------------------------------------------
   void initTouch() {
     if (TP_INT >= 0 && TP_RESET >= 0) {
       touch.setPins(TP_RESET, TP_INT);
     }
     touchOK = touch.begin(Wire, TP_I2C_ADDR, IIC_SDA, IIC_SCL);
-    Serial.printf("[HAL] Stopwatch touch init %s (addr: 0x%02X)\n", touchOK ? "SUCCESS" : "FAILED", TP_I2C_ADDR);
+    if (touchOK) {
+      touch.disableAutoSleep();
+      Serial.printf("[HAL] Stopwatch touch init SUCCESS (addr: 0x%02X)\n", TP_I2C_ADDR);
+    } else {
+      Serial.printf("[HAL] Stopwatch touch init FAILED (addr: 0x%02X)\n", TP_I2C_ADDR);
+    }
   }
 
   bool getTouchPoint(int16_t &outX, int16_t &outY) {
@@ -52,10 +57,8 @@ public:
   // ----------------------------------------------------------------------------
   void initPower() {
 #if PMU_CHIP_TYPE == 1
-    // AXP2101 初始化（如有）
-    Serial.println("[HAL] Initializing AXP2101 PMU...");
+    Serial.println("[HAL] Initializing PMU...");
 #elif PMU_CHIP_TYPE == 0
-    // ADC 电池电压检测
     if (BAT_ADC_PIN >= 0) {
       pinMode(BAT_ADC_PIN, INPUT);
     }
@@ -65,15 +68,13 @@ public:
   int getBatteryPct() {
 #if PMU_CHIP_TYPE == 0
     if (BAT_ADC_PIN < 0) return 100;
-    // 简易 ADC 读取：12-bit ADC 0~4095
     int raw = analogRead(BAT_ADC_PIN);
-    // 假设 2:1 分压电阻 (具体比例可随板卡调整)
     float voltage = (raw / 4095.0f) * 3.3f * 2.0f;
     if (voltage < 3.3f) return 0;
     if (voltage > 4.2f) return 100;
     return (int)((voltage - 3.3f) / (4.2f - 3.3f) * 100.0f);
 #else
-    return 100; // 默认满电，如挂接 AXP 则从 AXP 寄存器读取
+    return 100;
 #endif
   }
 
