@@ -564,7 +564,6 @@ void initMediaHid(BLEServer *server) {
   const uint8_t zero[2] = {0, 0}; mediaInput->setValue(const_cast<uint8_t*>(zero), sizeof(zero));
   mediaHid->hidControl()->setCallbacks(new HidControlCB());
   mediaHid->protocolMode()->setCallbacks(new HidProtocolCB());
-  mediaHid->setBatteryLevel(100); // updated from the existing fuel gauge in the loop
   mediaHid->startServices();
 }
 
@@ -4124,7 +4123,7 @@ void batPoll() {
   bool usb = vinOK && vin > 4000;
   bool changed = pct != batPct || chg != batChg || usb != usbIn;
   batPct = pct; batChg = chg; usbIn = usb;
-  if (mediaHid && changed && pct >= 0) mediaHid->setBatteryLevel((uint8_t)constrain(pct, 0, 100));
+  if (mediaHid && changed && pct >= 0 && bleConnected) mediaHid->setBatteryLevel((uint8_t)constrain(pct, 0, 100));
   if (changed) {
     if (onWaitScreen && page == 0 && !sliding) drawStatus();        // v7.2 只重画状态栏
     else if (inNav) navDirty = true;
