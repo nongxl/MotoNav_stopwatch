@@ -268,7 +268,7 @@ String pendingBootAck;
 
 // ===== M5Stack Stopwatch 面板与硬件抽象实例化 =====
 BoardStopwatchPanel stopwatchPanel;
-Arduino_TFT *panel = stopwatchPanel.panel;
+Arduino_CO5300 *panel = stopwatchPanel.panel;
 BoardStopwatchHal stopwatchHal;
 PortScale portScale;
 struct TextImg;    // Arduino 自动生成的函数声明需要先认识文字图片类型。

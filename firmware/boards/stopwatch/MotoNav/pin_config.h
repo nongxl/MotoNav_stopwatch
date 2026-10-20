@@ -1,70 +1,53 @@
 #pragma once
 
 // ==============================================================================
-// M5Stack Stopwatch (秒表) 硬件引脚与规格配置
+// M5Stack Stopwatch (秒表) 真实硬件引脚与规格配置 (对齐 M5GFX 官方规范)
 // ==============================================================================
 
 // ------------------------------------------------------------------------------
-// 1. 屏幕分辨率与显示面板配置
+// 1. 屏幕分辨率与显示面板配置 (466x466 AMOLED CO5300 QSPI)
 // ------------------------------------------------------------------------------
-// 物理面板像素尺寸（以典型 M5Stack 圆屏 240x240 为基准，亦可支持其他分辨率）
-#ifndef PANEL_WIDTH
-#define PANEL_WIDTH 240
-#endif
+#define PANEL_WIDTH   466
+#define PANEL_HEIGHT  466
+#define LCD_WIDTH     466
+#define LCD_HEIGHT    466
 
-#ifndef PANEL_HEIGHT
-#define PANEL_HEIGHT 240
-#endif
-
-// MotoNav 逻辑画布（保持 466x466，所有 UI、HUD、矢量图标、地图 100% 复用）
-#define LCD_WIDTH 466
-#define LCD_HEIGHT 466
-
-// 显示屏总线类型: 0 = SPI (GC9A01 / ST7789), 1 = QSPI
-#define LCD_BUS_TYPE 0
-
-// SPI 显示接口引脚配置 (以 M5Dial / ESP32-S3 Stopwatch 为参考，可根据具体板卡微调)
-#define LCD_MOSI   5
-#define LCD_MISO  -1
-#define LCD_SCLK   6
-#define LCD_CS     7
-#define LCD_DC     4
-#define LCD_RESET  8
-#define LCD_BL     9    // 背光引脚 (PWM 调光)
+// QSPI 显示接口引脚配置
+#define LCD_CS     39
+#define LCD_SCLK   40
+#define LCD_SDIO0  41
+#define LCD_SDIO1  42
+#define LCD_SDIO2  46
+#define LCD_SDIO3  45
+#define LCD_RESET  -1   // 由 M5IOE1 芯片控制
+#define LCD_BL     -1   // AMOLED 自身发光，通过面板寄存器调节亮度
 
 // ------------------------------------------------------------------------------
-// 2. 触摸屏配置 (Touch)
+// 2. I2C 总线与外设 (M5PM1, M5IOE1, CST820)
 // ------------------------------------------------------------------------------
-// M5Stack 常见触摸芯片: FT6336U (I2C 地址 0x38) 或 CST816 (0x15)
-#define IIC_SDA    11
-#define IIC_SCL    12
-#define TP_INT     14
-#define TP_RESET   -1   // 若与系统复用复位引脚可设为 -1
-#define TP_I2C_ADDR 0x38
+#define IIC_SDA    47
+#define IIC_SCL    48
+#define TP_INT     -1
+#define TP_RESET   -1
+#define TP_I2C_ADDR 0x15  // CST820 触控芯片
+
+#define M5PM1_ADDR  0x6E  // M5PM1 PMIC 电源管理芯片
+#define M5IOE1_ADDR 0x4F  // M5IOE1 IO扩展芯片 (控制屏幕与触控复位)
 
 // 触摸方向反转 (0=正常, 1=反转)
 #define BOARD_TOUCH_FLIP_X 0
 #define BOARD_TOUCH_FLIP_Y 0
 
 // ------------------------------------------------------------------------------
-// 3. 按键与旋转编码器配置 (Rotary Encoder & Buttons)
+// 3. 电源管理芯片与电池监测
 // ------------------------------------------------------------------------------
-// M5Stack Stopwatch 常见的秒表按键与旋转编码器
-#define ENCODER_PIN_A  40
-#define ENCODER_PIN_B  41
-#define BUTTON_A_PIN   42   // 实体按键 A (可映射为切换屏幕/暂停)
-#define BUTTON_B_PIN    2   // 实体按键 B (可映射为计次/返回)
-
-// ------------------------------------------------------------------------------
-// 4. 电源管理芯片与电池监测 (PMU & Battery)
-// ------------------------------------------------------------------------------
-// 0 = 无 PMU (使用内部 ADC 读取分压电量)
-// 1 = AXP2101 (I2C 地址 0x34)
-// 2 = AXP192  (I2C 地址 0x34)
 #define PMU_CHIP_TYPE 1
-#define BAT_ADC_PIN   1     // 当 PMU_CHIP_TYPE=0 时生效的 ADC 采样引脚
+#define BAT_ADC_PIN   -1
 
 // ------------------------------------------------------------------------------
-// 5. 蜂鸣器 / 震动马达
+// 4. 按键与编码器
 // ------------------------------------------------------------------------------
-#define BUZZER_PIN    3
+#define BUTTON_A_PIN   -1
+#define BUTTON_B_PIN   -1
+#define ENCODER_PIN_A  -1
+#define ENCODER_PIN_B  -1
