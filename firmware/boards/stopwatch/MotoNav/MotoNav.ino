@@ -1,6 +1,6 @@
 // v7.8 新增音乐页：导航左滑天气，右滑音乐；音乐左滑返回，上下滑也可查看天气；上一首/播放暂停/下一首，中文歌名和歌手。
 // MotoNav 圆屏固件：蓝牙接收导航指令，显示箭头、距离和各种行车信息
-// 板子：微雪 ESP32-S3-Touch-LCD-1.85B（物理 360x360，逻辑画布 466x466）
+// 板子：微雪 ESP32-S3-Touch-AMOLED-1.75（466x466）
 // 配套手机 App：v2.0 及以上
 //
 // 版本记录
@@ -207,7 +207,7 @@
 //   #f,1 / #f,0           v2.6 快速刷屏 开 / 关，保存后重启生效
 //   #t,0 / #t,1 / #t,2    v2.9 地图配色：0 原版，1 罪恶都市，2 GTA5（v6.1 增加 3~10，见版本记录）
 //   #Q,1 / #Q,0           v6.2 弯道急缓上色 开 / 关（v6.1 误用了 #q）
-//   #R,0~3                v6.2 圆屏方向：0 / 90 / 180 / 270 度
+//   #R,0~3[,角度]         v7.10.1 兼容四档方向，带第二项时按精确角度旋转
 //   #D角度                v6.4 圆屏方向任意角度 0~359（例 "#D37"；故意不带逗号，旧固件收到会忽略）
 //   #UNPAIR               v6.5 忘掉配对过的手机（v6.6 起保留正在连着的这台）
 //   #L毫秒                v6.7 小地图预判提前量 0~800（例 "#L300"；不带逗号，旧固件会忽略）
@@ -223,6 +223,8 @@
 //   #w,1 / #w,0           v4.9 清爽模式开 / 关
 //   #i,1,号码 / #i,0      v5.1 来电显示开始 / 结束（名字用 'B' 图片栏 2）
 //   #u,起,止,状态,...      v5.0 路况（米，离路线起点）；#y,1/0 重新规划中；#h,分钟 / #h 更快路线；#x,1/0 GPS 弱
+//   #HM,0/1               v7.9 App 音乐控制 / HID 媒体按键（保存到圆屏；互斥）
+//   HID,模式,可发按键        v7.9 HID 就绪状态；CAP,HID,1 能力通知
 //   #Z,有会话,播放中,按钮掩码   v7.8 音乐状态（1=上一首，2=播放暂停，4=下一首）；图片栏 5/6 为歌名/歌手
 // ---------------- 圆屏 → 手机（通知） ----------------
 //   T,M,Q / T,M,P / T,M,T / T,M,N   v7.8 请求音乐状态 / 上一首 / 播放暂停 / 下一首
@@ -230,7 +232,7 @@
 //   U,1                   v6.5 这台手机通过了配对验证（连上后发 3 次）
 //   V,电量,充电,USB,mV    v6.8 圆屏电池（电量 -1 = 没接电池）
 
-#define FW_VERSION "v7.8.11-185B"
+#define FW_VERSION "v7.12.1"
 
 // 调试时想在串口监视器里看到每条收到的文字指令，把 0 改成 1
 #define DEBUG_SERIAL 0
@@ -246,15 +248,25 @@
 #include <nvs_flash.h>
 #include "Arduino_GFX_Library.h"
 #include "pin_config.h"
+#include "BoardStopWatchInit.h"   // StopWatch：M5IOE1 扩展芯片（屏供电/复位/触摸复位）
 #include <Wire.h>
-#include "PortScale.h"
-#include "BoardStopwatchPanel.h"
-#include "BoardStopwatchHal.h"
+#include "TouchDrvCSTXXX.hpp"     // v5.2 触摸屏（SensorLib 库，微雪示例里带的）
 #include <Preferences.h>
+#include <esp_sleep.h>
+#include <esp_system.h>
+#include <driver/rtc_io.h>
+#include "IdlePowerOff.h"
+#include <driver/spi_master.h>
+#include <esp_bt.h>
+#include <esp_bt_main.h>
 #include <BLEDevice.h>
 #include <BLEServer.h>
 #include <BLEUtils.h>
 #include <BLE2902.h>
+#include <BLEHIDDevice.h>
+#include "HidMediaKeys.h"
+#include "AppleMediaClient.h"
+#include "ScreenRotationCommand.h"
 #include <BLESecurity.h>       // v6.5 配对验证
 #include <miniz.h>            // 罪恶都市轮廓：仅接收地图时解压
 #include "BootAnimation.h"
@@ -267,37 +279,18 @@ String pendingBootAck;
 #include "host/ble_store.h"   // v6.5 记住的手机
 #endif
 
-// ===== M5Stack Stopwatch 面板与硬件抽象实例化 (基于 M5Unified) =====
-BoardStopwatchPanel stopwatchPanel;
-BoardStopwatchHal stopwatchHal;
-PortScale portScale;
-struct TextImg;    // Arduino 自动生成的函数声明需要先认识文字图片类型。
-void flushLogicalFrame(const uint16_t *fb);
-void boardBrightness(uint8_t value) {
-  stopwatchPanel.setBrightness(value);
-}
-
-// 供 MotoNav SwapCanvas 使用的显示后端代理
-class DummyDisplay : public Arduino_TFT {
-public:
-  DummyDisplay() : Arduino_TFT(nullptr, -1, 0, false, LCD_WIDTH, LCD_HEIGHT, 0, 0, 0, 0) {}
-  bool begin(int32_t speed = 0) override { return true; }
-  void tftInit() override {}
-  void writeAddrWindow(int16_t x, int16_t y, uint16_t w, uint16_t h) override {}
-  void writePixelPreclipped(int16_t x, int16_t y, uint16_t color) override {}
-  void writeFastHLine(int16_t x, int16_t y, int16_t w, uint16_t color) override {}
-  void writeFastVLine(int16_t x, int16_t y, int16_t h, uint16_t color) override {}
-  void writeFillRectPreclipped(int16_t x, int16_t y, int16_t w, int16_t h, uint16_t color) override {}
-};
-static DummyDisplay dummyDisplay;
-Arduino_TFT *panel = &dummyDisplay;
+// ===== 屏幕（和官方 HelloWorld 示例一样的初始化方式）=====
+// v2.6 第 7 个参数 true = 总线可共享（快速刷屏要和它轮流使用数据线）
+Arduino_DataBus *bus = new Arduino_ESP32QSPI(
+  LCD_CS, LCD_SCLK, LCD_SDIO0, LCD_SDIO1, LCD_SDIO2, LCD_SDIO3, true);
+Arduino_CO5300 *panel = new Arduino_CO5300(
+  bus, LCD_RESET, 0, LCD_WIDTH, LCD_HEIGHT, 6, 0, 0, 0);
 // 先画在内存里的“画布”上，画完再一次性推到屏幕（需要 PSRAM：OPI PSRAM）
 // v2.2：可以切换画布内存的画布，用来做双缓冲
 class SwapCanvas : public Arduino_Canvas {
 public:
   SwapCanvas(int16_t w, int16_t h, Arduino_G *out) : Arduino_Canvas(w, h, out) {}
   void setFramebuffer(uint16_t *f) { _framebuffer = f; }
-  void flush(bool force_flush=false) override { if(_framebuffer)flushLogicalFrame(_framebuffer); }
 };
 SwapCanvas *gfx = new SwapCanvas(LCD_WIDTH, LCD_HEIGHT, panel);
 bool needFlush = false;
@@ -373,6 +366,8 @@ int laneN = 0;                // 车道数，0 表示不显示
 // v3.1 小地图底部的行程信息（"#e,剩余米,到达时间HHMM,红绿灯数"）和前方红绿灯（"#g,距离"）
 bool tripOn = false;
 bool cruiseOn = false;        // v4.8 巡航模式（没有目的地，只显示地图、车速、电子眼、安全提示）
+IdlePowerOffTimer idlePowerOffTimer = {0, false};
+volatile bool powerOffPending = false;
 bool cleanOn = false;         // v4.9 清爽模式：地图照常，去掉红绿灯、电子眼、安全提示、测速牌和行程信息（"#w,1/0"）
 int tripRemainM = 0, tripEta = 0, tripLights = 0;
 // v7.3 路程进度
@@ -397,7 +392,7 @@ float mapCamLockH[MCAM_MAX];  // v4.0 放图标时的地图朝向：之后固定
 uint8_t laneBg[8], laneFr[8]; // 每条车道的背景方向码、推荐方向码（0xF = 不推荐）
 
 // ===== 文字图片（手机渲染好的 4 位灰度图）=====
-#define IMG_SLOTS 12           // 0 = 路名，1 = 底部信息，2 = 来电人名字，3/4 = 天气地名和风湿度，5/6 = 音乐歌名和歌手
+#define IMG_SLOTS 13           // 0 = 路名，1 = 底部信息，2 = 来电人名字，3/4 = 天气地名和风湿度，5/6 = 音乐歌名和歌手
 #define IMG_MAX   8192        // 每张图最多字节数
 struct TextImg {
   uint8_t *show;              // 正在显示的图
@@ -406,11 +401,31 @@ struct TextImg {
   int recvId; uint16_t recvW; uint8_t recvH; uint8_t recvParts; uint32_t recvMask;
 };
 TextImg imgs[IMG_SLOTS];
+AppleMediaClient appleMedia;
+volatile uint32_t mediaConnectionEpoch = 0;
+uint32_t lyricImageGeneration = 0; uint16_t lyricImageTitleRevision = 0, lyricImageArtistRevision = 0;
+bool musicLyrics = false;                  // #ML,0/1; never persist an enabled default
 bool musicDirty = true;
 bool musicHave = false, musicPlaying = false;
 int musicActions = 0;
 int musicPressed = -1, musicAck = 0;
 unsigned long musicAckUntil = 0;
+// HID adds a second GATT service to the existing authenticated navigation connection.
+bool hidMusicMode = false;                  // persisted by #HM,0/1; Android explicitly selects 0
+BLEHIDDevice *mediaHid = nullptr;
+BLECharacteristic *mediaInput = nullptr;
+volatile bool hidSubscribed = false, hidSuspended = false, hidReportMode = true;
+volatile uint16_t hidSubscriber = 0xFFFF;
+volatile bool hidNotifyAccepted = false;
+volatile uint32_t hidSessionEpoch = 0;
+uint32_t hidSeenEpoch = 0;
+bool hidReadyShown = false, hidReleaseOnReady = true;
+String pendingHidStatus, pendingLyricsStatus, pendingMediaStatus;
+unsigned long hidInitialReleaseAt = 0;
+HidMediaKeys::Pulses hidPulses;
+unsigned long hidTapAt = 0;
+void hidMediaTick();
+bool hidMediaReady();
 bool wxDirty = false;                 // v5.3 天气页要重画
 
 // ================= v6.5 蓝牙配对验证 =================
@@ -425,7 +440,7 @@ volatile bool pairLocked = false;     // 不在允许配对的时间：不显示
 volatile bool pairDone = false;       // 配对结束（成功或失败）
 volatile bool pairOk = false;
 int authNotifies = 0;                 // "U,1" 已经发了几次
-unsigned long lastAuthNotifyAt = 0;   // 上次发送 "U,1" 的时间戳
+unsigned long lastAuthNotifyAt = 0;
 
 int bondCount() {
   int n = 0;
@@ -446,42 +461,136 @@ class SecCB : public BLESecurityCallbacks {
 #if defined(CONFIG_NIMBLE_ENABLED)
   void onAuthenticationComplete(ble_gap_conn_desc *d) {
     bool ok = d && d->sec_state.encrypted && d->sec_state.authenticated;
-    if (ok) { bleAuthed = true; bleAuthAt = millis(); authNotifies = 0; lastAuthNotifyAt = 0; }
+    if (ok) { bleAuthed = true; bleAuthAt = millis(); authNotifies = 0; }
     pairOk = ok;
     pairDone = true;
   }
 #else
   void onAuthenticationComplete(esp_ble_auth_cmpl_t cmpl) {
     bool ok = cmpl.success;
-    if (ok) { bleAuthed = true; bleAuthAt = millis(); authNotifies = 0; lastAuthNotifyAt = 0; }
+    if (ok) { bleAuthed = true; bleAuthAt = millis(); authNotifies = 0; }
     pairOk = ok;
     pairDone = true;
   }
 #endif
 };
 
+class HidInputCB : public BLECharacteristicCallbacks {
+public:
+#if defined(CONFIG_NIMBLE_ENABLED)
+  void onSubscribe(BLECharacteristic *, ble_gap_conn_desc *desc, uint16_t value) override {
+    hidSubscriber = desc ? desc->conn_handle : 0xFFFF;
+    hidSubscribed = (value & 1) != 0; ++hidSessionEpoch;
+  }
+#endif
+  void onStatus(BLECharacteristic *, Status status, uint32_t) override {
+    hidNotifyAccepted = status == SUCCESS_NOTIFY;
+  }
+};
+class HidControlCB : public BLECharacteristicCallbacks {
+public:
+  void onWrite(BLECharacteristic *c) override {
+    if (c->getLength() == 1 && c->getData()[0] <= 1) { hidSuspended = c->getData()[0] == 0; ++hidSessionEpoch; }
+  }
+};
+class HidProtocolCB : public BLECharacteristicCallbacks {
+public:
+  void onWrite(BLECharacteristic *c) override {
+    if (c->getLength() == 1 && c->getData()[0] <= 1) { hidReportMode = c->getData()[0] == 1; ++hidSessionEpoch; }
+  }
+};
+// Gate every report on this connection's pairing, host subscription and report mode.
+bool hidMediaLinkReady() {
+  return mediaInput && bleConnected && bleAuthed && hidSubscribed &&
+         hidSubscriber == bleConnHandle && !hidSuspended && hidReportMode;
+}
+bool hidMediaReady() { return hidMediaLinkReady() && !hidReleaseOnReady && hidSeenEpoch == hidSessionEpoch; }
+bool hidMediaNotify(uint16_t usage) {
+  if (!hidMediaLinkReady()) return false;
+  uint8_t report[2]; HidMediaKeys::encode(usage, report);
+  hidNotifyAccepted = false;
+  mediaInput->setValue(report, sizeof(report)); mediaInput->notify();
+  return hidNotifyAccepted; // queued by BLE stack; does not confirm player state
+}
+void hidMediaTick() {
+  static bool resetWritten = false;
+  uint32_t epoch = hidSessionEpoch;
+  if (hidSeenEpoch != epoch) {
+    hidPulses.reset(); hidReleaseOnReady = true; resetWritten = false; hidSeenEpoch = epoch;
+  }
+  bool linkReady = hidMediaLinkReady();
+  if (!linkReady) {
+    if (!resetWritten) {
+      hidPulses.reset(); hidReleaseOnReady = true;
+      if (mediaInput) { const uint8_t zero[2] = {0, 0}; mediaInput->setValue(const_cast<uint8_t*>(zero), sizeof(zero)); }
+      resetWritten = true;
+    }
+  } else if (hidReleaseOnReady) {
+    resetWritten = false;
+    if (!hidInitialReleaseAt || millis() - hidInitialReleaseAt >= 50) {
+      hidInitialReleaseAt = millis();
+      if (hidMediaNotify(0)) hidReleaseOnReady = false;
+    }
+  } else {
+    if (!hidMusicMode) hidPulses.cancelQueued();
+    HidMediaKeys::Pulses::Report report;
+    if (hidPulses.poll(millis(), report)) {
+      bool sent = hidMediaNotify(report.usage);
+      hidPulses.submitted(report, millis(), sent);
+      if (!report.release || !sent) {
+        musicAck = sent ? 6 : 8; musicAckUntil = millis() + 2500; musicDirty = true;
+      }
+    }
+  }
+  bool ready = hidMediaReady();
+  static int lastMode = -1;
+  if (ready != hidReadyShown || lastMode != (int)hidMusicMode) {
+    hidReadyShown = ready; lastMode = hidMusicMode;
+    pendingHidStatus = String("HID,") + (hidMusicMode ? 1 : 0) + "," + (ready ? 1 : 0);
+    Serial.printf("MEDIA HID ready=%d auth=%d sub=%d suspended=%d report=%d release=%d\n", ready, (bool)bleAuthed, (bool)hidSubscribed, (bool)hidSuspended, (bool)hidReportMode, hidReleaseOnReady);
+    musicDirty = true;
+  }
+}
+void initMediaHid(BLEServer *server) {
+  mediaHid = new BLEHIDDevice(server);
+  mediaHid->manufacturer()->setValue("MotoNav");
+  // DIY/private device identity, not a borrowed keyboard vendor/product ID.
+  const uint8_t identity[7] = {0x01, 0xFF, 0xFF, 0x01, 0x00, 0x00, 0x01};
+  mediaHid->deviceInfo()->getCharacteristic(BLEUUID((uint16_t)0x2A50))->setValue(const_cast<uint8_t*>(identity), sizeof(identity));
+  mediaHid->hidInfo(0, 0x02); // Normally Connectable, no remote wake claim
+  mediaHid->reportMap(const_cast<uint8_t *>(HidMediaKeys::REPORT_MAP), sizeof(HidMediaKeys::REPORT_MAP));
+  mediaInput = mediaHid->inputReport(HidMediaKeys::REPORT_ID);
+  mediaInput->setCallbacks(new HidInputCB());
+  const uint8_t zero[2] = {0, 0}; mediaInput->setValue(const_cast<uint8_t*>(zero), sizeof(zero));
+  mediaHid->hidControl()->setCallbacks(new HidControlCB());
+  mediaHid->protocolMode()->setCallbacks(new HidProtocolCB());
+  mediaHid->setBatteryLevel(100); // updated from the existing fuel gauge in the loop
+  mediaHid->startServices();
+}
+
 class ServerCB : public BLEServerCallbacks {
   void onConnect(BLEServer *s) {
-    bleConnected = true;
-#if defined(CONFIG_NIMBLE_ENABLED)
-    bleAuthed = false;
-#else
-    bleAuthed = true;                   // Bluedroid 平台无 NimBLE 绑定存储机制，连上即视为就绪
-#endif
-    bleConnAt = millis();
+    bleConnected = true; ++mediaConnectionEpoch;
+#if !defined(CONFIG_NIMBLE_ENABLED)
+    bleAuthed = true;
     bleAuthAt = millis();
+#else
+    bleAuthed = false;
+#endif
+    hidSubscribed = false; hidSubscriber = 0xFFFF; hidSuspended = false; hidReportMode = true; ++hidSessionEpoch;
+    bleConnAt = millis();
     authNotifies = 0;
-    lastAuthNotifyAt = 0;
+    lastAuthNotifyAt = millis();
   }
 #if defined(CONFIG_NIMBLE_ENABLED)
   void onConnect(BLEServer *s, ble_gap_conn_desc *desc) { if (desc) bleConnHandle = desc->conn_handle; }
 #endif
   void onDisconnect(BLEServer *s) {
-    bleConnected = false;
+    bleConnected = false; ++mediaConnectionEpoch;
     bleAuthed = false;
     bleConnHandle = 0xFFFF;
-    lastAuthNotifyAt = 0;
-    BLEDevice::startAdvertising();  // 断开后重新广播，方便手机重连
+    hidSubscribed = false; hidSubscriber = 0xFFFF; ++hidSessionEpoch;
+    if (!powerOffPending) BLEDevice::startAdvertising();
   }
 };
 
@@ -497,6 +606,7 @@ void saveAndRestart(const char *key, int val, bool isBool) {
 
 class RxCB : public BLECharacteristicCallbacks {
   void onWrite(BLECharacteristic *c) {
+    if (powerOffPending) return;
     size_t n = c->getLength();
     if (n == 0) return;
     const uint8_t *d0 = c->getData();
@@ -575,119 +685,144 @@ void saveRotIfDue() {
 }
 
 bool fastFlushInit() {
-  fastDev = nullptr;
-  return false;
+  spi_device_interface_config_t dc;
+  memset(&dc, 0, sizeof(dc));
+  dc.command_bits = 8;
+  dc.address_bits = 24;
+  dc.mode = 0;
+  dc.clock_source = SPI_CLK_SRC_DEFAULT;
+  dc.clock_speed_hz = qspiMHz * 1000000;
+  dc.spics_io_num = -1;                   // 片选自己控制（和屏幕库一样）
+  dc.flags = SPI_DEVICE_HALFDUPLEX;
+  dc.queue_size = 2;
+  if (spi_bus_add_device(SPI2_HOST, &dc, &fastDev) != ESP_OK) { fastDev = nullptr; return false; }
+  for (int i = 0; i < 2; i++) {
+    fastBuf[i] = (uint8_t *)heap_caps_aligned_alloc(16, FAST_PIX * 2, MALLOC_CAP_DMA);
+    if (!fastBuf[i]) { fastDev = nullptr; return false; }
+  }
+  return true;
 }
 
 // v7.7 RGB565 拆成 0x0GGRRBB 形式（绿、红、蓝之间留空），一次乘法就能三个颜色一起按权重混合
 static inline uint32_t rgbSpread(uint16_t c) { return ((uint32_t)c | ((uint32_t)c << 16)) & 0x07E0F81Fu; }
 
-// 1.85B 以物理分辨率传输；整套原界面统一缩放，圆屏方向也在同一步转换。
 void fastPush(const uint16_t *fb) {
-  panel->startWrite();panel->writeAddrWindow(0,0,PANEL_WIDTH,PANEL_HEIGHT);panel->endWrite();
-  spi_device_acquire_bus(fastDev,portMAX_DELAY);digitalWrite(LCD_CS,LOW);
+  panel->startWrite();
+  panel->writeAddrWindow(0, 0, LCD_WIDTH, LCD_HEIGHT);   // 设置写入区域（整屏）+ 写显存命令
+  panel->endWrite();
+  spi_device_acquire_bus(fastDev, portMAX_DELAY);
+  digitalWrite(LCD_CS, LOW);
   static spi_transaction_ext_t tr[2];
-  uint32_t sent=0,total=PANEL_WIDTH*PANEL_HEIGHT;int bi=0,inflight=0;bool first=true;
-  while(sent<total) {
-    uint32_t count=min((uint32_t)FAST_PIX,total-sent);
-    if(inflight==2){spi_transaction_t* result;spi_device_get_trans_result(fastDev,&result,portMAX_DELAY);inflight--;}
-    uint16_t* out=(uint16_t*)fastBuf[bi];
-    int y=sent/PANEL_WIDTH,x=sent%PANEL_WIDTH;
-    for(uint32_t i=0;i<count;i++) {
-      uint16_t pixel=portScale.pixel(fb,x,y,screenRot,rotFree,rotCos,rotSin);
-      out[i]=(uint16_t)((pixel>>8)|(pixel<<8));
-      if(++x==PANEL_WIDTH){x=0;y++;}
+  const uint32_t total = (uint32_t)LCD_WIDTH * LCD_HEIGHT;
+  uint32_t sent = 0;
+  int bi = 0, inflight = 0;
+  bool first = true;
+  while (sent < total) {
+    uint32_t l = total - sent;
+    if (l > FAST_PIX) l = FAST_PIX;
+    if (inflight == 2) {                                  // 两块都在传：等最早那块传完再复用
+      spi_transaction_t *r;
+      spi_device_get_trans_result(fastDev, &r, portMAX_DELAY);
+      inflight--;
     }
-    spi_transaction_ext_t& t=tr[bi];memset(&t,0,sizeof(t));
-    if(first){t.base.flags=SPI_TRANS_MODE_QIO;t.base.cmd=0x32;t.base.addr=0x002C00;first=false;}
-    else t.base.flags=SPI_TRANS_MODE_QIO|SPI_TRANS_VARIABLE_CMD|SPI_TRANS_VARIABLE_ADDR|SPI_TRANS_VARIABLE_DUMMY;
-    t.base.tx_buffer=fastBuf[bi];t.base.length=count*16;
-    spi_device_queue_trans(fastDev,(spi_transaction_t*)&t,portMAX_DELAY);
-    inflight++;bi^=1;sent+=count;
-  }
-  while(inflight){spi_transaction_t* result;spi_device_get_trans_result(fastDev,&result,portMAX_DELAY);inflight--;}
-  digitalWrite(LCD_CS,HIGH);spi_device_release_bus(fastDev);
-}
-
-void flushLogicalFrame(const uint16_t* fb) {
-  if (!fb) return;
-  int16_t ox = (M5.Display.width() - LCD_WIDTH) / 2;
-  int16_t oy = (M5.Display.height() - LCD_HEIGHT) / 2;
-  if (ox < 0) ox = 0;
-  if (oy < 0) oy = 0;
-
-  M5.Display.startWrite();
-  if (!rotFree && screenRot == 0) {
-    // 0° 无旋转：整帧最高效直接推送
-    M5.Display.pushImage(ox, oy, LCD_WIDTH, LCD_HEIGHT, (const uint16_t*)fb);
-  } else if (!rotFree) {
-    // 90° / 180° / 270° 快速坐标映射旋转
-    static uint16_t lineBuf[LCD_WIDTH];
-    const int W = LCD_WIDTH;
-    const uint32_t N = (uint32_t)LCD_WIDTH * LCD_HEIGHT;
-    for (int py = 0; py < W; py++) {
-      if (screenRot == 2) {
-        for (int px = 0; px < W; px++) {
-          lineBuf[px] = fb[N - 1 - (py * W + px)];
+    // 拷贝并交换高低字节（屏幕要高字节在前）
+    if (rotFree) {
+      // v6.4 任意角度：屏幕上的点 (px,py) 取画布上转过去的点；圆外面涂黑
+      uint16_t *d16 = (uint16_t *)fastBuf[bi];
+      const int W = LCD_WIDTH, C = LCD_WIDTH / 2;
+      int py = sent / W, px = sent - py * W;
+      int32_t fx = 0, fy = 0;
+      int xs = 0, xe = -1;
+      bool rowInit = false;
+      for (uint32_t i = 0; i < l; i++) {
+        if (!rowInit) {
+          int hw = rotSpan[py];
+          xs = C - hw; xe = C + hw;
+          // 以像素中心算（屏幕宽 466 是双数，正中心在 232.5）：dx2、dy2 是离中心距离的 2 倍
+          int dx2 = 2 * px - (W - 1), dy2 = 2 * py - (W - 1);
+          // 源点 = (dx·cos + dy·sin, −dx·sin + dy·cos) + 中心；+0.5 四舍五入
+          fx = ((dx2 * rotCos + dy2 * rotSin) >> 1) + ((W - 1) << 15) + 32768;
+          fy = ((-dx2 * rotSin + dy2 * rotCos) >> 1) + ((W - 1) << 15) + 32768;
+          rowInit = true;
         }
-      } else if (screenRot == 1) {
-        for (int px = 0; px < W; px++) {
-          lineBuf[px] = fb[(W - 1 - px) * W + py];
-        }
-      } else { // screenRot == 3
-        for (int px = 0; px < W; px++) {
-          lineBuf[px] = fb[px * W + (W - 1 - py)];
-        }
-      }
-      M5.Display.pushImage(ox, oy + py, W, 1, lineBuf);
-    }
-  } else {
-    // v6.4 任意角度双线性插值抗锯齿旋转
-    static uint16_t lineBuf[LCD_WIDTH];
-    const int W = LCD_WIDTH, C = LCD_WIDTH / 2;
-    for (int py = 0; py < W; py++) {
-      int hw = rotSpan[py];
-      int xs = C - hw, xe = C + hw;
-      int dy2 = 2 * py - (W - 1);
-      int dx2 = -(W - 1);
-      int32_t fx = ((dx2 * rotCos + dy2 * rotSin) >> 1) + ((W - 1) << 15) + 32768;
-      int32_t fy = ((-dx2 * rotSin + dy2 * rotCos) >> 1) + ((W - 1) << 15) + 32768;
-      for (int px = 0; px < W; px++) {
         uint16_t v = 0;
         if (px >= xs && px <= xe) {
-          int32_t bx = fx - 32768, by = fy - 32768;
+          // v7.7 双线性插值：取周围 4 个点按距离混合（以前只取最近的一个点，斜着转时字的笔画粗细不均、发糊）
+          int32_t bx = fx - 32768, by = fy - 32768;          // 去掉“四舍五入”的 0.5，换成小数部分当权重
           int sx = bx >> 16, sy = by >> 16;
           if ((unsigned)sx < (unsigned)(W - 1) && (unsigned)sy < (unsigned)(W - 1)) {
             const uint16_t *r0 = fb + sy * W + sx, *r1 = r0 + W;
-            uint32_t ax = (bx >> 11) & 31, ay = (by >> 11) & 31;
+            uint32_t ax = (bx >> 11) & 31, ay = (by >> 11) & 31;   // 0~31 的权重
             uint32_t a = rgbSpread(r0[0]), b = rgbSpread(r0[1]), c = rgbSpread(r1[0]), d = rgbSpread(r1[1]);
             uint32_t top = ((a * (32 - ax) + b * ax) >> 5) & 0x07E0F81Fu;
             uint32_t bot = ((c * (32 - ax) + d * ax) >> 5) & 0x07E0F81Fu;
             uint32_t m = ((top * (32 - ay) + bot * ay) >> 5) & 0x07E0F81Fu;
             v = (uint16_t)(m | (m >> 16));
           } else {
-            int nx = fx >> 16, ny = fy >> 16;
+            int nx = fx >> 16, ny = fy >> 16;                 // 画布最边上一圈：还按最近的点取
             if ((unsigned)nx < (unsigned)W && (unsigned)ny < (unsigned)W) v = fb[ny * W + nx];
           }
         }
-        lineBuf[px] = v;
-        fx += rotCos;
-        fy -= rotSin;
+        d16[i] = (uint16_t)((v >> 8) | (v << 8));
+        fx += rotCos; fy -= rotSin;
+        if (++px == W) { px = 0; py++; rowInit = false; }
       }
-      M5.Display.pushImage(ox, oy + py, W, 1, lineBuf);
+    } else if (screenRot == 0) {
+      const uint32_t *src = (const uint32_t *)(fb + sent);
+      uint32_t *dst = (uint32_t *)fastBuf[bi];
+      for (uint32_t i = 0; i < l / 2; i++) {
+        uint32_t v = src[i];
+        dst[i] = ((v & 0x00FF00FFu) << 8) | ((v >> 8) & 0x00FF00FFu);
+      }
+    } else {
+      // v6.2 转向：屏幕上第 j 个像素取画布上转过去的那个位置
+      uint16_t *d16 = (uint16_t *)fastBuf[bi];
+      const uint32_t W = LCD_WIDTH, N = (uint32_t)LCD_WIDTH * LCD_HEIGHT;
+      uint32_t py = sent / W, px = sent - py * W;
+      for (uint32_t i = 0; i < l; i++) {
+        uint32_t idx;
+        if (screenRot == 2) idx = N - 1 - (sent + i);
+        else if (screenRot == 1) idx = (W - 1 - px) * W + py;
+        else idx = px * W + (W - 1 - py);
+        uint16_t v = fb[idx];
+        d16[i] = (uint16_t)((v >> 8) | (v << 8));
+        if (++px == W) { px = 0; py++; }
+      }
     }
+    spi_transaction_ext_t &t = tr[bi];
+    memset(&t, 0, sizeof(t));
+    if (first) {
+      t.base.flags = SPI_TRANS_MODE_QIO;
+      t.base.cmd = 0x32;
+      t.base.addr = 0x003C00;
+      first = false;
+    } else {
+      t.base.flags = SPI_TRANS_MODE_QIO | SPI_TRANS_VARIABLE_CMD | SPI_TRANS_VARIABLE_ADDR | SPI_TRANS_VARIABLE_DUMMY;
+    }
+    t.base.tx_buffer = fastBuf[bi];
+    t.base.length = l * 16;
+    spi_device_queue_trans(fastDev, (spi_transaction_t *)&t, portMAX_DELAY);
+    inflight++;
+    bi ^= 1;
+    sent += l;
   }
-  M5.Display.endWrite();
+  while (inflight) {
+    spi_transaction_t *r;
+    spi_device_get_trans_result(fastDev, &r, portMAX_DELAY);
+    inflight--;
+  }
+  digitalWrite(LCD_CS, HIGH);
+  spi_device_release_bus(fastDev);
 }
 
 void flushTask(void *arg) {
   for (;;) {
     xSemaphoreTake(flushReq, portMAX_DELAY);
     uint32_t t0 = millis();
-    flushLogicalFrame(flushSrc);
+    if (fastDev) fastPush(flushSrc);
+    else panel->draw16bitRGBBitmap(0, 0, flushSrc, LCD_WIDTH, LCD_HEIGHT);
     flushMsAcc += millis() - t0; flushCnt++;
     xSemaphoreGive(flushDone);
-    vTaskDelay(1); // 让出 CPU 0 调度给 IDLE0 与系统看门狗，彻底解决 task_wdt 崩溃
   }
 }
 
@@ -727,7 +862,7 @@ void initDoubleBuffer() {
   flushReq = xSemaphoreCreateBinary();
   flushDone = xSemaphoreCreateBinary();
   xSemaphoreGive(flushDone);
-  xTaskCreatePinnedToCore(flushTask, "flush", 8192, nullptr, 2, nullptr, 0);
+  xTaskCreatePinnedToCore(flushTask, "flush", 4096, nullptr, 2, nullptr, 0);
 }
 
 // ================= 基础画图工具 =================
@@ -1354,16 +1489,39 @@ void drawRedRing() {
 }
 
 // 顶部小圆点：绿 = 蓝牙已连接，灰 = 未连接
-// ================= M5Stack Stopwatch 电池与电源管理 =================
-bool pmuOK=true;
-int batPct=-1;
-bool batChg=false,usbIn=false;
-int batMv=0;
-unsigned long batAt=0,batSentAt=0;
-String pendingBat="";
+// ================= v6.8 电池（AXP2101 电源芯片，和触摸屏共用 I2C，地址 0x34）=================
+#define PMU_ADDR 0x34
+bool pmuOK = false;
+int batPct = -1;                       // -1 = 没接电池
+bool batChg = false, usbIn = false;
+int batMv = 0;
+unsigned long batAt = 0, batSentAt = 0;
+String pendingBat = "";
+
+int pmuRead(uint8_t reg) {
+  Wire.beginTransmission(PMU_ADDR);
+  Wire.write(reg);
+  if (Wire.endTransmission(false) != 0) return -1;
+  if (Wire.requestFrom((uint8_t)PMU_ADDR, (uint8_t)1) != 1) return -1;
+  return Wire.read();
+}
+void pmuSetBit(uint8_t reg, uint8_t bit) {
+  int v = pmuRead(reg);
+  if (v < 0 || (v & (1 << bit))) return;
+  Wire.beginTransmission(PMU_ADDR);
+  Wire.write(reg);
+  Wire.write((uint8_t)(v | (1 << bit)));
+  Wire.endTransmission();
+}
+
+// 开机时调一次：只打开电量计、电池检测、电池电压测量，不动任何供电设置
 void batInit() {
-  stopwatchHal.initPower();
-  pmuOK=true;
+  // StopWatch：电源管理是 M5PM1（0x6E），已在 StopWatchBoard::init() 里完成初始化
+  //（含关看门狗、使能充电、CHG_PROG/CHG_STAT 脚配置）。这里做一次首读确认电池在位。
+  pmuOK = StopWatchBoard::pm1OK;
+  if (!pmuOK) return;
+  uint16_t mv = 0;
+  if (StopWatchBoard::pm1.readVbat(&mv) != M5PM1_OK || mv < 2800) pmuOK = false;
 }
 
 // 小电池图标：x0,y0 = 左上角（电池身 24x12，右边小凸头，再右边是百分比数字）
@@ -1660,9 +1818,11 @@ void handleBitmap(const uint8_t *d, int n) {
     im.showW = 0; im.showH = 0; im.recvId = -1;
     navDirty = true;
     if (slot == 3 || slot == 4) wxDirty = true;
-    if (slot == 5 || slot == 6) musicDirty = true;
+    if (slot == 5 || slot == 6 || slot == 12) musicDirty = true;
     return;
   }
+  if (slot == 12 && (!musicLyrics || !hidMusicMode || !appleMedia.available ||
+      lyricImageGeneration != appleMedia.generation || lyricImageTitleRevision != appleMedia.values[0].revision || lyricImageArtistRevision != appleMedia.values[1].revision)) return;
   int total = ((w + 1) / 2) * h;
   if (total > IMG_MAX || parts > 32) return;
   if (id != im.recvId) {                          // 新的一张图：重新开始接收
@@ -1679,7 +1839,7 @@ void handleBitmap(const uint8_t *d, int n) {
     im.recvId = -1;
     navDirty = true;
     if (slot == 3 || slot == 4) wxDirty = true;
-    if (slot == 5 || slot == 6) musicDirty = true;                // 音乐文字图片收齐后刷新
+    if (slot == 5 || slot == 6 || slot == 12) musicDirty = true;                // 音乐文字图片收齐后刷新
   }
 }
 
@@ -2218,6 +2378,7 @@ unsigned long callAt = 0, callSeenAt = 0;
 
 // v5.2 触屏接电话：按住任意位置 HOLD_MS 毫秒 → 发 "T,A" 给手机（v6.9 800 → 200）
 #define HOLD_MS 200
+TouchDrvCST816 touch;   // StopWatch：CST820B（chipId 0xB7）属于 CST816 族；微雪 1.75 的 CST9217 才用 CST92xx
 bool touchOK = false;
 unsigned long touchHoldAt = 0, touchLastSeen = 0;
 float touchHold = 0;                 // 0~1 按住的进度
@@ -2231,11 +2392,40 @@ volatile bool touchIrq = false;
 void IRAM_ATTR onTouchIrq() { touchIrq = true; }
 
 void touchInit() {
-  stopwatchHal.initTouch();
-  touchOK = stopwatchHal.touchOK;
-  if (touchOK && TP_INT >= 0) {
-    attachInterrupt(TP_INT, onTouchIrq, FALLING);
+  StopWatchBoard::tpReset();      // StopWatch：触摸复位在 M5IOE1 上，按官方时序手动来一次
+  touch.setPins(TP_RESET, TP_INT);
+  touchOK = touch.begin(Wire, 0x15, IIC_SDA, IIC_SCL);   // StopWatch CST820B 地址 0x15（微雪 CST9217 是 0x5A）
+  if (!touchOK) {
+    // M5IOE1 初始化会把总线提到 400kHz，CST820 保守按 100kHz 跑——降速重试一次（换料批次时留个后手）
+    Wire.setClock(100000);
+    delay(50);
+    StopWatchBoard::tpReset();
+    touchOK = touch.begin(Wire, 0x15, IIC_SDA, IIC_SCL);
   }
+  Serial.println(touchOK ? "touch ok" : "touch not found");
+  if (touchOK) attachInterrupt(TP_INT, onTouchIrq, FALLING);   // v5.3
+}
+
+// StopWatch：用户按键换页（与触摸手势等价）
+//   主页：A 键 → 天气页（等于往右滑），B 键 → 音乐页（等于往左滑）
+//   天气/音乐页：任意键 → 回主页（按进来方向的反向滑回，和手势一致）
+void buttonTick() {
+  static bool lastA = true, lastB = true;
+  static unsigned long lastAt = 0;
+  bool a = digitalRead(BTN_A), b = digitalRead(BTN_B);
+  if (a && b) { lastA = a; lastB = b; return; }          // 没有按下
+  unsigned long now = millis();
+  if (now - lastAt < 250) { lastA = a; lastB = b; return; }   // 防抖 + 连按间隔
+  int key = 0;
+  if (!a && lastA) key = 1;
+  else if (!b && lastB) key = 2;
+  lastAt = now; lastA = a; lastB = b;
+  if (!key) return;
+  if (sliding || callOn || pairOn || fxOn) return;   // 动画/来电/配对/特效进行中不响应（sliding 已覆盖拖动动画态）
+  // 按键侧的进入方向按"键在哪边、页面从哪边来"：A(左上)→天气从左，B(右上)→音乐从右；
+  // 回主页按进入方向的反向滑回
+  if (page == 0) showPageAnimated(key == 1 ? 1 : 2, key == 1 ? 1 : -1, 0);
+  else showPageAnimated(0, page == 1 ? -1 : 1, 0);
 }
 
 bool touchDown = false;
@@ -2252,15 +2442,13 @@ void touchPoll() {
   static unsigned long lastPoll = 0;
   unsigned long now = millis();
   if (!touchOK) return;
-#if TP_INT >= 0
   if (!touchIrq && !touchDown && !callOn) return;
-#endif
   if (now - lastPoll < 12) return;
   lastPoll = now;
   touchIrq = false;
   if (callAnswerSent && now - callAnswerAt > 4000) callAnswerSent = false;   // 4 秒还在响：允许再按一次
   int16_t x[5] = {0}, y[5] = {0};
-  uint8_t n = stopwatchHal.getTouchPoint(x[0], y[0]) ? 1 : 0;
+  uint8_t n = touch.getPoint(x, y, 1);
   if (n > 0) {
     if (!touchDown) {
       touchDown = true;
@@ -2525,6 +2713,10 @@ void drawWeather() {
   // 风 · 湿度
   drawTextImg(4, 232, 0xC0);
   if (wxHourly) {
+    if (wxN <= 0) {
+      printCentered("HOURLY UNAVAILABLE", CX, 322, 2, C_GREY);
+      printCentered("CHECK PHONE WEATHER DETAILS", CX, 354, 1, C_GREY);
+    }
     // v5.6 接下来几个小时：几点 / 图标 / 温度 / 降雨概率（≥10% 才显示）
     for (int i = 0; i < wxN && i < 6; i++) {
       int x = CX + (int)((i - (wxN - 1) / 2.0f) * 76);
@@ -2576,8 +2768,10 @@ void parseWeather(const String &m) {
 
 // ---- v5.5 跟手换页 ----
 // 触摸坐标和画面方向相反时改成 1（拖动时画面往手指反方向走就是反了）
-#define TOUCH_FLIP_X BOARD_TOUCH_FLIP_X      // v5.5.1 实测左右是反的
-#define TOUCH_FLIP_Y BOARD_TOUCH_FLIP_Y      // 实机坐标确认：上下也反向；点按和手势使用同一校正
+// StopWatch：CST820B 与屏幕原生对齐（USB 朝下、不旋转），实测微雪的 180° 校正
+// 反而把点按拧到了对面象限（音乐页按钮要点对角才生效）——两个翻转都关掉
+#define TOUCH_FLIP_X 0      // v5.5.1 实测左右是反的
+#define TOUCH_FLIP_Y 0      // 实机坐标确认：上下也反向；点按和手势使用同一校正
 #define DRAG_START  16        // 手指移动超过这么多像素才开始拖
 uint16_t *slideOld = nullptr, *slideNew = nullptr;
 int16_t chordHalf[LCD_HEIGHT];   // 每一行在圆里的半宽（圆外不用算）
@@ -2592,21 +2786,33 @@ void drawMusic() {
   frameIsMap = false;
   printCentered("MUSIC", CX, 65, 4, C_CYAN);
   bool linked = bleConnected && bleAuthed;
-  if (linked) {
+  if (hidMusicMode && linked && !appleMedia.available) {
+    printCentered("PHONE MEDIA KEYS", CX, 158, 2, C_WHITE);
+    printCentered("OPEN MUSIC APP ON PHONE", CX, 210, 2, C_GREY);
+  } else if (linked) {
     drawTextImg(5, 158, 0xFF);
     drawTextImg(6, 210, 0xBB);
   } else printCentered("PHONE OFFLINE", CX, 170, 3, C_GREY);
-  const char *feedback[] = {"", "SENT", "PHONE RECEIVED", "DONE", "NO RESPONSE", "NO PLAYER"};
+  bool showLyrics = linked && hidMusicMode && musicLyrics && appleMedia.available && imgs[12].showW > 0;
+  if (showLyrics) drawTextImg(12, 242, 0xDD);
+  const char *feedback[] = {"", "SENT", "PHONE RECEIVED", "DONE", "NO RESPONSE", "NO PLAYER", "HID SENT", "HID NOT READY", "HID SEND FAILED", "AMS SENT", "AMS SEND FAILED", "AMS QUEUED"};
   String state = linked && musicHave ? (musicPlaying ? "PLAYING" : "PAUSED") : "NO PLAYER";
-  if (musicAck > 0 && musicAck <= 5) state = feedback[musicAck];
-  printCentered(state, CX, 257, 2, musicAck == 4 ? C_ORANGE : C_GREY);
+  if (hidMusicMode) {
+    state = !hidMediaReady() ? (appleMedia.controlMask() ? "AMS MEDIA READY" : "PAIR HID IN PHONE SETTINGS") : !appleMedia.available ? "HID READY / AMS UNAVAILABLE"
+      : !appleMedia.playback.known ? "STATE UNKNOWN" : appleMedia.playback.state == 1 ? "PLAYING" : appleMedia.playback.state == 0 ? "PAUSED" : "SEEKING";
+  }
+  if (musicAck > 0 && musicAck <= 11) state = feedback[musicAck];
+  printCentered(state, CX, showLyrics ? 272 : 257, 2, musicAck == 4 ? C_ORANGE : C_GREY);
   for (int i = 0; i < 3; i++) {
     int x = CX + (i - 1) * 100, y = 335;
-    bool enabled = linked && musicHave;
+    bool enabled = hidMusicMode ? (hidMediaReady() || appleMedia.controlReady(i)) : linked && musicHave;
     uint16_t c = enabled ? C_WHITE : C_GREY;
     aaDisc(x, y, 43, enabled && musicPressed == i ? 0x0470 : enabled ? 0x19A7 : 0x1082);
     if (i == 1) {
-      if (musicPlaying) {
+      if (hidMusicMode && !appleMedia.playback.known) {
+        gfx->fillTriangle(x - 19, y - 15, x - 19, y + 15, x + 1, y, c);
+        gfx->fillRect(x + 7, y - 15, 5, 30, c); gfx->fillRect(x + 16, y - 15, 5, 30, c);
+      } else if (musicPlaying) {
         gfx->fillRect(x - 13, y - 15, 8, 30, c);
         gfx->fillRect(x + 5, y - 15, 8, 30, c);
       } else gfx->fillTriangle(x - 10, y - 17, x - 10, y + 17, x + 17, y, c);
@@ -2616,7 +2822,15 @@ void drawMusic() {
       gfx->fillRect(x + sign * 15 - 3, y - 15, 6, 30, c);
     }
   }
-  printCentered("SWIPE LEFT TO RETURN", CX, 402, 2, C_GREY);
+  if (hidMusicMode && appleMedia.available) {
+    double duration = AppleMediaData::duration(appleMedia.values[3].text.c_str());
+    if (duration > 0 && appleMedia.playback.known) {
+      double elapsed = appleMedia.playback.elapsed + appleMedia.playback.rate * (millis() - appleMedia.playbackAt) / 1000.0;
+      int sec = (int)constrain(elapsed, 0.0, duration), total = (int)duration;
+      char time[32]; snprintf(time, sizeof(time), "%d:%02d / %d:%02d", sec/60, sec%60, total/60, total%60);
+      printCentered(time, CX, 392, 2, C_GREY);
+    }
+  } else printCentered("SWIPE LEFT TO RETURN", CX, 402, 2, C_GREY);
   drawPageDots();
   needFlush = true;
 }
@@ -2861,6 +3075,18 @@ int musicButtonAt(int x, int y) {
 void musicTap(int x, int y) {
   if (dragging || page != 2 || callOn || pairOn || !bleConnected || !bleAuthed) return;
   int button = musicButtonAt(x, y);
+  if (hidMusicMode) {
+    if (button < 0) return;
+    bool hidReady = hidMediaReady();
+    if (!hidReady && !appleMedia.controlReady(button)) { musicAck = 7; musicAckUntil = millis() + 2500; musicDirty = true; return; }
+    if (hidTapAt && millis() - hidTapAt < 120) return;
+    hidTapAt = millis();
+    if (!hidReady) {
+      musicAck = appleMedia.control(button) ? 11 : 10; musicAckUntil = millis() + 2500; musicDirty = true; return;
+    }
+    if (!hidPulses.enqueue(button)) { musicAck = 8; musicAckUntil = millis() + 2500; musicDirty = true; }
+    return; // no T,M,P/T/N: do not also control Apple Music through the App
+  }
   if (button < 0 || !musicHave) {
     pendingEvt = String("T,M,H,") + x + "," + y + "," + button;
     return;
@@ -3873,14 +4099,32 @@ void batPoll() {
   unsigned long now = millis();
   if (batAt && now - batAt < 5000) return;
   batAt = now;
-  int pct = stopwatchHal.getBatteryPct();
-  bool present = pct >= 0;
-  bool chg = false;
-  bool usb = false;
-  int voltage = 4000;
-  int batMv_now = present ? voltage : 0;
+  // StopWatch：M5PM1 读电池电压/输入电压/充电脚；电量按官方 UserDemo 的
+  // 3300-4200mV 线性映射 + 7:1 低通滤波（避免显示跳动）
+  uint16_t mv = 0, vin = 0;
+  uint8_t chgStat = 1;
+  bool vOK = StopWatchBoard::pm1.readVbat(&mv) == M5PM1_OK;
+  bool vinOK = StopWatchBoard::pm1.readVin(&vin) == M5PM1_OK;
+  StopWatchBoard::pm1.gpioGetInput(M5PM1_GPIO_NUM_2, &chgStat);
+  bool present = false;
+  int pct = -1;
+  if (vOK && mv >= 2800) {
+    present = true;
+    batMv = mv;
+    static uint16_t filt = 0;
+    filt = filt == 0 ? mv : (filt * 7 + mv + 4) / 8;
+    pct = (int)constrain((int32_t)(filt - 3300) * 100 / 900, 0, 100);
+  }
+  // v7.2 偶尔读不到电池：先沿用上次的电量，连续 3 次读不到才当成没接电池
+  static int missCnt = 0;
+  if (pct < 0) { if (batPct >= 0 && ++missCnt < 3) { pct = batPct; present = true; } }
+  else missCnt = 0;
+  // 充电中 = 有外部供电（Vin>4V）且 CHG_STAT 脚为低；插着 USB 只看 Vin
+  bool chg = present && vinOK && vin > 4000 && chgStat == 0;
+  bool usb = vinOK && vin > 4000;
   bool changed = pct != batPct || chg != batChg || usb != usbIn;
-  batPct = pct; batChg = chg; usbIn = usb; batMv = batMv_now;
+  batPct = pct; batChg = chg; usbIn = usb;
+  if (mediaHid && changed && pct >= 0) mediaHid->setBatteryLevel((uint8_t)constrain(pct, 0, 100));
   if (changed) {
     if (onWaitScreen && page == 0 && !sliding) drawStatus();        // v7.2 只重画状态栏
     else if (inNav) navDirty = true;
@@ -3900,6 +4144,20 @@ void sendPendingAck() {
     lastAuthNotifyAt = millis();
     txChar->setValue((uint8_t *)"U,1", 3);
     txChar->notify();
+    txChar->setValue((uint8_t *)"CAP,HID,1", 9); txChar->notify();
+    txChar->setValue((uint8_t *)"CAP,LYR,1", 9); txChar->notify();
+    pendingHidStatus = String("HID,") + (hidMusicMode ? 1 : 0) + "," + (hidMediaReady() ? 1 : 0);
+    appleMedia.resend();
+    pendingLyricsStatus = String("ML,") + (musicLyrics ? 1 : 0);
+    pendingMediaStatus = String("AMC,") + appleMedia.controlMask();
+  }
+  if (pendingLyricsStatus.length()) { txChar->setValue((uint8_t *)pendingLyricsStatus.c_str(), pendingLyricsStatus.length()); txChar->notify(); pendingLyricsStatus = ""; }
+  if (pendingMediaStatus.length()) { txChar->setValue((uint8_t *)pendingMediaStatus.c_str(), pendingMediaStatus.length()); txChar->notify(); pendingMediaStatus = ""; }
+  uint8_t amsFrame[139]; size_t amsSize = 0;
+  if (appleMedia.nextFrame(amsFrame, amsSize, millis())) { txChar->setValue(amsFrame, amsSize); txChar->notify(); }
+  if (pendingHidStatus.length()) {
+    txChar->setValue((uint8_t *)pendingHidStatus.c_str(), pendingHidStatus.length());
+    txChar->notify(); pendingHidStatus = "";
   }
   if (pendingBootAck.length()) {
     txChar->setValue((uint8_t *)pendingBootAck.c_str(), pendingBootAck.length());
@@ -8693,6 +8951,8 @@ void drawNavFrame() {
 }
 
 void resetNavState() {
+  if (idlePowerOffNavigationActive(true, inNav, cruiseOn, navDir == "A"))
+    idlePowerOffReset(&idlePowerOffTimer, millis());
   inNav = false;
   tripOn = false; lightDist = -1;                       // v3.1
   mapCamN = 0;                                          // v3.5
@@ -8715,6 +8975,42 @@ int hexVal(char c) {
 
 // 处理文字类消息
 void handleText(const String &m) {
+  if (m.startsWith("#LY,")) {
+    unsigned long gen = 0; unsigned title = 0, artist = 0;
+    if (sscanf(m.c_str(), "#LY,%lu,%u,%u", &gen, &title, &artist) == 3 && gen == appleMedia.generation &&
+        title == appleMedia.values[0].revision && artist == appleMedia.values[1].revision) {
+      lyricImageGeneration = gen; lyricImageTitleRevision = title; lyricImageArtistRevision = artist;
+    } else { lyricImageGeneration = 0; imgs[12].showW = 0; imgs[12].showH = 0; imgs[12].recvId = -1; }
+    return;
+  }
+  if (m == "#ML,0" || m == "#ML,1") {
+    bool wasEnabled = musicLyrics;
+    musicLyrics = m == "#ML,1";
+    if (!musicLyrics) {
+      lyricImageGeneration = 0; imgs[12].showW = 0; imgs[12].showH = 0; imgs[12].recvId = -1; imgs[12].recvMask = 0; imgs[12].recvParts = 0;
+      // Older companion renderers may have put lyrics in the artist bitmap.
+      // Ask for a fresh title/artist once per connection or on an actual OFF transition.
+      static uint32_t refreshedEpoch = 0xffffffff;
+      if (wasEnabled || refreshedEpoch != mediaConnectionEpoch) {
+        refreshedEpoch = mediaConnectionEpoch;
+        imgs[6].showW = 0; imgs[6].showH = 0; imgs[6].recvId = -1; pendingEvt = "T,M,Q";
+      }
+    }
+    pendingLyricsStatus = String("ML,") + (musicLyrics ? 1 : 0);
+    Serial.printf("MEDIA LYRICS enabled=%d\n", musicLyrics);
+    musicDirty = true; return;
+  }
+  if (m == "#HM,0" || m == "#HM,1") {
+    bool enabled = m == "#HM,1";
+    if (enabled != hidMusicMode) {
+      hidMusicMode = enabled; hidPulses.cancelQueued();
+      Preferences pr; pr.begin("motonav", false); pr.putBool("mediahid", enabled); pr.end();
+    }
+    if (!hidMusicMode) { musicLyrics = false; imgs[12].showW = 0; imgs[12].showH = 0; imgs[12].recvId = -1; }
+    musicAck = 0; musicAckUntil = 0; musicDirty = true;
+    pendingHidStatus = String("HID,") + (hidMusicMode ? 1 : 0) + "," + (hidMediaReady() ? 1 : 0);
+    return;
+  }
   // A dedicated command: no navigation state or screen invalidation.
   if (m.startsWith("#BOOT,")) {
     int id = BootAnimation::parse(m.c_str() + 6);
@@ -8732,15 +9028,17 @@ void handleText(const String &m) {
     pendingBootAck = "BOOT," + String(saved ? bootBrand : -1);
     return;
   }
+  if (m == "#AMS?") { appleMedia.resend(); return; }
   if (m == "#GB?") { pendingBuildingCapability=true; return; }
   if (m.startsWith("#ZACK,")) {
+    if (hidMusicMode) return;
     musicAck = constrain(m.substring(6).toInt(), 0, 5);
     musicAckUntil = millis() + 2500; musicDirty = true; return;
   }
   if (m.startsWith("#Z,")) {
     int have = 0, play = 0, actions = 0;
     if (sscanf(m.c_str(), "#Z,%d,%d,%d", &have, &play, &actions) == 3) {
-      musicHave = have != 0; musicPlaying = play != 0; musicActions = actions & 7; musicDirty = true;
+      if (!hidMusicMode) { musicHave = have != 0; musicPlaying = play != 0; musicActions = actions & 7; } musicDirty = true;
     }
     return;
   }
@@ -8840,9 +9138,13 @@ void handleText(const String &m) {
     return;
   }
   if (m.startsWith("#Q,")) { curveOn = m.substring(3).toInt() != 0; navDirty = true; return; }   // v6.2 弯道上色
-  if (m.startsWith("#R,")) {                             // v6.2 圆屏方向（90° 一档）
-    int d = (m.substring(3).toInt() & 3) * 90;
-    if (d != screenDeg) { setScreenDeg(d, true); navDirty = true; needFlush = true; }
+  if (m.startsWith("#R,") || m.startsWith("#D")) {
+    // iOS sends #R,nearestQuarter,exactDegrees; Android sends #R then #Ddegrees.
+    // Preserve legacy #R,quarter while applying the exact angle when supplied.
+    int d;
+    if (ScreenRotationCommand::parse(m.c_str(), d) && d != screenDeg) {
+      setScreenDeg(d, true); navDirty = true; needFlush = true;
+    }
     return;
   }
   if (m.startsWith("#L")) {                              // v6.7 预判提前量："#L300"
@@ -8864,11 +9166,6 @@ void handleText(const String &m) {
       }
     }
 #endif
-    return;
-  }
-  if (m.startsWith("#D")) {                              // v6.4 圆屏方向任意角度："#D37"
-    int d = m.substring(2).toInt();
-    if (((d % 360) + 360) % 360 != screenDeg) { setScreenDeg(d, true); navDirty = true; needFlush = true; }
     return;
   }
   if (m.startsWith("#e")) {                              // v3.1 行程信息：剩余米,到达时间HHMM,红绿灯数
@@ -8981,10 +9278,10 @@ void handleText(const String &m) {
     int b = constrain(m.substring(3).toInt(), 5, 255);
     if (flushDone) {                                    // v2.2 刷屏任务在用总线时先等它推完
       xSemaphoreTake(flushDone, portMAX_DELAY);
-      boardBrightness(b);
+      panel->setBrightness(b);
       xSemaphoreGive(flushDone);
     } else {
-      boardBrightness(b);
+      panel->setBrightness(b);
     }
     return;
   }
@@ -9014,12 +9311,7 @@ void handleText(const String &m) {
       navAngle = NAN;
     }
     inNav = true;
-    if (bleAuthed && txChar && authNotifies < 8 && millis() - lastAuthNotifyAt > 2000) {
-      authNotifies++;
-      lastAuthNotifyAt = millis();
-      txChar->setValue((uint8_t *)"U,1", 3);
-      txChar->notify();
-    }
+    if (navDir != "A") idlePowerOffReset(&idlePowerOffTimer, millis());
     updateRingTarget();
     navDirty = true;
   }
@@ -9065,10 +9357,14 @@ void setup() {
     nvs_flash_erase();
     nvs_flash_init();
   }
-  stopwatchPanel.init();
-  stopwatchHal.init();
+  Serial.printf("Reset reason=%d, sleep wake=%d\n", (int)esp_reset_reason(),
+                (int)esp_sleep_get_wakeup_cause());
+  Wire.begin(IIC_SDA, IIC_SCL);
+  StopWatchBoard::init();   // StopWatch：M5IOE1 上电（屏电源/OLED复位/触摸复位），必须先于 touchInit/gfx->begin
   touchInit();                                         // v5.2 触摸屏
   batInit();                                           // v6.8 电源芯片（电量）
+  pinMode(BTN_A, INPUT_PULLUP);                        // StopWatch：用户按键 A/B（上拉、按下为低）
+  pinMode(BTN_B, INPUT_PULLUP);
 
   // v2.3 读取保存的屏幕数据线速度（默认 40MHz，和官方示例一样）
   {
@@ -9078,12 +9374,13 @@ void setup() {
     screenRot = pr.getInt("rot", 0) & 3;                            // v6.2 圆屏方向
     setScreenDeg(pr.getInt("rotd", screenRot * 90), false);         // v6.4 任意角度
     bootBrand = BootAnimation::valid(pr.getInt("bootbrand", 0));
+    hidMusicMode = pr.getBool("mediahid", false);
     fastFlushOn = pr.getBool("fastf", true);
     pr.end();
     if (qspiMHz != 40 && qspiMHz != 60 && qspiMHz != 80) qspiMHz = 40;
   }
-  if (!gfx->begin(qspiMHz * 1000000)) { Serial.println("gfx->begin() failed; stopping before framebuffer use");while(true)delay(1000); }
-  boardBrightness(200);
+  if (!gfx->begin(qspiMHz * 1000000)) Serial.println("gfx->begin() failed!");
+  panel->setBrightness(200);
 
   iconBuf = (uint16_t *)ps_malloc(ICON_BUF_W * ICON_BUF_H * 2);   // v1.8.1 图标缓存
   buildRingLut();                                                   // v1.8.3 抗锯齿圆环查找表
@@ -9149,15 +9446,109 @@ void setup() {
   txChar = svc->createCharacteristic(TX_UUID, BLECharacteristic::PROPERTY_NOTIFY);   // v2.0
   txChar->addDescriptor(new BLE2902());
   svc->start();
+  initMediaHid(server);
+  appleMedia.begin();
   BLEAdvertising *adv = BLEDevice::getAdvertising();
   adv->addServiceUUID(SERVICE_UUID);
+  adv->addServiceUUID(BLEUUID((uint16_t)0x1812));
+  adv->setAppearance(GENERIC_HID);
   adv->setScanResponse(true);
   BLEDevice::startAdvertising();
+  idlePowerOffReset(&idlePowerOffTimer, millis());
   Serial.println(String("MotoNav ready, firmware ") + FW_VERSION);
 }
 
+// Power down before destroying BLE objects: the host can still dispatch events
+// referencing those objects. Shutdown does not need to reclaim their memory.
+void idlePowerOffShutdown() {
+  powerOffPending = true;
+  Serial.println("No navigation for 5 minutes: powering off");
+  const bool displayReady = !flushDone ||
+      xSemaphoreTake(flushDone, pdMS_TO_TICKS(3000)) == pdTRUE;
+  if (displayReady) {
+    panel->setBrightness(0);
+    panel->displayOff();
+  }
+  // Check the chip ID, rather than writing to an unknown device at address 0x34.
+  const int chip = pmuRead(0x03);
+  Serial.printf("Shutdown: PMIC id=%02X, on=%02X, off=%02X\n",
+                chip, pmuRead(0x20), pmuRead(0x21));
+  if (chip == 0x4A) {
+    const int config = pmuRead(0x10);
+    if (config >= 0) {
+      Wire.beginTransmission(PMU_ADDR);
+      Wire.write(0x10);
+      // Bit 1 is a separate, self-clearing RESET command; never replay it.
+      Wire.write((uint8_t)((config & ~0x02) | 0x01));
+      const int result = Wire.endTransmission();
+      Serial.printf("Shutdown: PMIC command result=%d\n", result);
+      delay(1000);
+    }
+  }
+  // If the PMIC is unavailable or external power keeps the CPU supplied, stop
+  // screen/BLE/CPU activity instead of repeatedly rebooting or staying awake.
+  // Normal PMIC-off wakes via PWR; this fallback can also wake via BOOT (GPIO0).
+  Serial.println("PMIC did not remove CPU power; entering deep sleep");
+  // Stop the host/controller without deleting live GATT objects. Deep sleep
+  // discards RAM anyway. Keep objects valid until pending callbacks have ended.
+#if defined(CONFIG_NIMBLE_ENABLED)
+  nimble_port_stop();
+#elif defined(CONFIG_BLUEDROID_ENABLED)
+  esp_bluedroid_disable();
+#endif
+#if CONFIG_BT_CONTROLLER_ENABLED
+  esp_bt_controller_disable();
+#endif
+  esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_ALL);
+  // StopWatch：唤醒源 = 两个用户按键（A=GPIO2、B=GPIO1，上拉、按下为低），
+  // 任意一个按下即唤醒（EXT1 任意低电平）。原版的 GPIO0/BOOT 在这块板上没有引出。
+  {
+    const gpio_num_t wakeKeys[2] = { GPIO_NUM_1, GPIO_NUM_2 };
+    for (int i = 0; i < 2; i++) {
+      rtc_gpio_init(wakeKeys[i]);
+      rtc_gpio_set_direction(wakeKeys[i], RTC_GPIO_MODE_INPUT_ONLY);
+      rtc_gpio_pullup_en(wakeKeys[i]);
+      rtc_gpio_pulldown_dis(wakeKeys[i]);
+    }
+    // EXT1 低电平触发：按着键入睡会导致立刻唤醒重启，等两键都松开 100ms 再武装
+    uint32_t releasedAt = millis(), waitAt = releasedAt;
+    while (millis() - waitAt < 1500 && millis() - releasedAt < 100) {
+      if (!rtc_gpio_get_level(GPIO_NUM_1) || !rtc_gpio_get_level(GPIO_NUM_2)) releasedAt = millis();
+      delay(10);
+    }
+    if (millis() - releasedAt >= 100) {
+      esp_sleep_enable_ext1_wakeup((1ULL << 1) | (1ULL << 2), ESP_EXT1_WAKEUP_ANY_LOW);
+    } else {
+      Serial.println("key held; wake disabled (use PWR to power cycle)");
+    }
+  }
+  esp_deep_sleep_start();
+}
+
 void loop() {
-  M5.update();
+  hidMediaTick();                                      // press/release without blocking navigation
+  static uint32_t lyricConnectionEpoch = 0;
+  if (lyricConnectionEpoch != mediaConnectionEpoch) {
+    lyricConnectionEpoch = mediaConnectionEpoch; musicLyrics = false; lyricImageGeneration = 0;
+    imgs[12].showW = 0; imgs[12].showH = 0; imgs[12].recvId = -1; musicDirty = true;
+  }
+  appleMedia.tick(bleConnected && bleAuthed && hidMusicMode, bleConnHandle, mediaConnectionEpoch, millis());
+  static int lastControlMask = -1;
+  int controlMask = appleMedia.controlMask();
+  if (lastControlMask != controlMask) { lastControlMask = controlMask; pendingMediaStatus = String("AMC,") + controlMask; musicDirty = true; Serial.printf("MEDIA AMS controls=%d\n", controlMask); }
+  if (appleMedia.controlAck) { musicAck = appleMedia.controlAck > 0 ? 9 : 10; appleMedia.controlAck = 0; musicAckUntil = millis() + 2500; musicDirty = true; }
+  if (appleMedia.changed) {
+    appleMedia.changed = false; musicDirty = true;
+    static uint32_t lyricGeneration = 0; static uint16_t lyricTitleRevision = 0, lyricArtistRevision = 0;
+    if (lyricGeneration != appleMedia.generation || lyricTitleRevision != appleMedia.values[0].revision || lyricArtistRevision != appleMedia.values[1].revision) {
+      lyricImageGeneration = 0;
+      lyricGeneration = appleMedia.generation; lyricTitleRevision = appleMedia.values[0].revision; lyricArtistRevision = appleMedia.values[1].revision;
+      imgs[12].showW = 0; imgs[12].showH = 0; imgs[12].recvId = -1;
+    }
+    if (hidMusicMode) { musicHave = appleMedia.available && appleMedia.values[0].text.length(); musicPlaying = appleMedia.playback.known && appleMedia.playback.state == 1; }
+  }
+  static unsigned long mediaDrawAt = 0;
+  if (hidMusicMode && appleMedia.available && millis() - mediaDrawAt >= 1000) { mediaDrawAt = millis(); musicDirty = true; }
   saveRotIfDue();                                      // v6.4
   // v6.5 连上 60 秒还没通过验证（不是自己的手机）：断开，让自己的手机能连
 #if defined(CONFIG_NIMBLE_ENABLED)
@@ -9218,6 +9609,7 @@ void loop() {
   if (mapNow) navDirty = true;
 
   touchPoll();                                         // v5.2 按住接听 / v5.3 滑动换页
+  buttonTick();                                        // StopWatch：用户按键换页
   batPoll();                                           // v6.8 电量
   // 4. 需要时重画导航画面
   // v6.5 配对：整屏显示配对码，配好 / 失败 / 60 秒 / 断开后回到原来的画面
@@ -9290,6 +9682,17 @@ void loop() {
     if (frameIsMap) flushAsync(); else flushSync();
     needFlush = false;
     frameIsMap = false;
+  }
+  // Idle phone traffic (including HID/AMS) does not count as navigation.
+  const bool navigating = idlePowerOffNavigationActive(
+      bleConnected && bleAuthed, inNav, cruiseOn, navDir == "A");
+  const bool interacting = pairOn || pairReq || callOn || touchDown || dragging || sliding;
+  if (idlePowerOffDue(&idlePowerOffTimer, millis(), navigating, interacting)) {
+    bool queued;
+    portENTER_CRITICAL(&mux);
+    queued = rxTail != rxHead;
+    portEXIT_CRITICAL(&mux);
+    if (!queued) idlePowerOffShutdown();
   }
   delay(mapNow ? 1 : 10);
 }

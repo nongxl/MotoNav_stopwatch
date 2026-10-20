@@ -1,53 +1,34 @@
 #pragma once
 
-// ==============================================================================
-// M5Stack Stopwatch (秒表) 真实硬件引脚与规格配置 (对齐 M5GFX 官方规范)
-// ==============================================================================
+// M5Stack StopWatch（ESP32-S3R8，16MB flash + 8MB OPI PSRAM）
+// 引脚来源：docs.m5stack.com/en/core/StopWatch 官方 PinMap +
+//           M5StopWatch-UserDemo main/hal/hal_display.cpp
+// 与微雪 1.75 同为 CO5300 466×466 QSPI 屏（窗口 offset_x=6，与
+// MotoNav.ino 里 Arduino_CO5300 构造参数一致），面板驱动零改动。
 
-// ------------------------------------------------------------------------------
-// 1. 屏幕分辨率与显示面板配置 (466x466 AMOLED CO5300 QSPI)
-// ------------------------------------------------------------------------------
-#define PANEL_WIDTH   466
-#define PANEL_HEIGHT  466
-#define LCD_WIDTH     466
-#define LCD_HEIGHT    466
+#define LCD_SDIO0 41
+#define LCD_SDIO1 42
+#define LCD_SDIO2 46
+#define LCD_SDIO3 45
+#define LCD_SCLK 40
+#define LCD_CS 39
+// OLED 复位不在 ESP32 GPIO 上，挂在 M5IOE1 扩展芯片 PYG5：
+// 这里给 -1（Arduino_GFX 跳过自己的复位），复位由 BoardStopWatchInit.h 负责
+#define LCD_RESET -1
+#define LCD_WIDTH 466
+#define LCD_HEIGHT 466
 
-// QSPI 显示接口引脚配置
-#define LCD_CS     39
-#define LCD_SCLK   40
-#define LCD_SDIO0  41
-#define LCD_SDIO1  42
-#define LCD_SDIO2  46
-#define LCD_SDIO3  45
-#define LCD_RESET  -1   // 由 M5IOE1 芯片控制
-#define LCD_BL     -1   // AMOLED 自身发光，通过面板寄存器调节亮度
+// TOUCH：CST820B，挂系统 I2C（SDA=47 / SCL=48），地址 0x15（MotoNav.ino touchInit 里改）
+#define IIC_SDA 47
+#define IIC_SCL 48
+#define TP_INT 13
+// 触摸复位同样在 M5IOE1 PYG4 上，给 -1，由 BoardStopWatchInit.h 复位
+#define TP_RESET -1
 
-// ------------------------------------------------------------------------------
-// 2. I2C 总线与外设 (M5PM1, M5IOE1, CST820)
-// ------------------------------------------------------------------------------
-#define IIC_SDA    47
-#define IIC_SCL    48
-#define TP_INT     -1
-#define TP_RESET   -1
-#define TP_I2C_ADDR 0x15  // CST820 触控芯片
+// 用户按键（官方 hal_button.cpp：A=GPIO2、B=GPIO1，上拉输入，按下为低电平）
+#define BTN_A 2
+#define BTN_B 1
 
-#define M5PM1_ADDR  0x6E  // M5PM1 PMIC 电源管理芯片
-#define M5IOE1_ADDR 0x4F  // M5IOE1 IO扩展芯片 (控制屏幕与触控复位)
-
-// 触摸方向反转 (0=正常, 1=反转)
-#define BOARD_TOUCH_FLIP_X 0
-#define BOARD_TOUCH_FLIP_Y 0
-
-// ------------------------------------------------------------------------------
-// 3. 电源管理芯片与电池监测
-// ------------------------------------------------------------------------------
-#define PMU_CHIP_TYPE 1
-#define BAT_ADC_PIN   -1
-
-// ------------------------------------------------------------------------------
-// 4. 按键与编码器
-// ------------------------------------------------------------------------------
-#define BUTTON_A_PIN   -1
-#define BUTTON_B_PIN   -1
-#define ENCODER_PIN_A  -1
-#define ENCODER_PIN_B  -1
+// 板上没有 AXP2101（电源管理是 M5Stack 私有 M5PM1）；
+// MotoNav.ino 的 batInit 已在本板型里短路为 pmuOK=false，防 0x34 误写。
+// 本项目不用音频（ES8311）和 SD，相关引脚不再定义。
