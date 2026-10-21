@@ -59,6 +59,19 @@ int main(void) {
   assert(!idlePowerOffDue(&t, 599994, false, false));
   assert(idlePowerOffDue(&t, 599995, false, false));
 
+  /* StopWatch: 2 minutes without a BLE link powers off; linked/busy renews. */
+  idlePowerOffReset(&t, 0);
+  assert(!idleLinkOffDue(&t, 119999, false, false));
+  assert(idleLinkOffDue(&t, 120000, false, false));
+  idlePowerOffReset(&t, 0);
+  assert(!idleLinkOffDue(&t, 900000, true, false));   /* linked: never due, renews */
+  assert(!idleLinkOffDue(&t, 900000, false, true));   /* busy: renews at 900000 */
+  assert(!idleLinkOffDue(&t, 1019999, false, false));
+  assert(idleLinkOffDue(&t, 1020000, false, false));
+  idlePowerOffReset(&t, UINT32_C(0xffff0000));
+  assert(!idleLinkOffDue(&t, (uint32_t)(UINT32_C(0xffff0000) + 119999), false, false));
+  assert(idleLinkOffDue(&t, (uint32_t)(UINT32_C(0xffff0000) + 120000), false, false));
+
   /* millis wrap and reset at timestamp zero are both valid, without sentinels. */
   idlePowerOffReset(&t, UINT32_C(0xffff0000));
   assert(!idlePowerOffDue(&t, (uint32_t)(UINT32_C(0xffff0000) + 299999), false, false));
