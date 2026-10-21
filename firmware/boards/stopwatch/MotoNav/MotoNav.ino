@@ -9462,32 +9462,25 @@ void setup() {
 // referencing those objects. Shutdown does not need to reclaim their memory.
 void idlePowerOffShutdown() {
   powerOffPending = true;
-  Serial.println("No navigation for 5 minutes: powering off");
+  Serial.println("No link for 2 minutes: powering off");
   const bool displayReady = !flushDone ||
       xSemaphoreTake(flushDone, pdMS_TO_TICKS(3000)) == pdTRUE;
   if (displayReady) {
     panel->setBrightness(0);
     panel->displayOff();
   }
-  // Check the chip ID, rather than writing to an unknown device at address 0x34.
-  const int chip = pmuRead(0x03);
-  Serial.printf("Shutdown: PMIC id=%02X, on=%02X, off=%02X\n",
-                chip, pmuRead(0x20), pmuRead(0x21));
-  if (chip == 0x4A) {
-    const int config = pmuRead(0x10);
-    if (config >= 0) {
-      Wire.beginTransmission(PMU_ADDR);
-      Wire.write(0x10);
-      // Bit 1 is a separate, self-clearing RESET command; never replay it.
-      Wire.write((uint8_t)((config & ~0x02) | 0x01));
-      const int result = Wire.endTransmission();
-      Serial.printf("Shutdown: PMIC command result=%d\n", result);
-      delay(1000);
-    }
+  // StopWatch：真关机走 M5PM1（0x6E）SYS_CMD=OFF，之后按 PWR 键重新上电。
+  // AXP2101(0x34) 掉电分支是 175 板遗留；这块板上 0x34 没有设备，永远读不到 0x4A。
+  if (StopWatchBoard::pm1OK) {
+    const m5pm1_err_t result = StopWatchBoard::pm1.shutdown();
+    Serial.printf("Shutdown: PM1 result=%d\n", (int)result);
+    // 真断电则不会返回；能返回说明 PM1 不可用或 USB 供电还在。
+    if (result == M5PM1_OK) delay(1500);
   }
   // If the PMIC is unavailable or external power keeps the CPU supplied, stop
   // screen/BLE/CPU activity instead of repeatedly rebooting or staying awake.
-  // Normal PMIC-off wakes via PWR; this fallback can also wake via BOOT (GPIO0).
+  // Normal PMIC-off wakes via PWR; this fallback keeps A/B EXT1 so a USB-powered
+  // device can still be woken without replugging.
   Serial.println("PMIC did not remove CPU power; entering deep sleep");
   // Stop the host/controller without deleting live GATT objects. Deep sleep
   // discards RAM anyway. Keep objects valid until pending callbacks have ended.
@@ -9683,11 +9676,11 @@ void loop() {
     needFlush = false;
     frameIsMap = false;
   }
-  // Idle phone traffic (including HID/AMS) does not count as navigation.
-  const bool navigating = idlePowerOffNavigationActive(
-      bleConnected && bleAuthed, inNav, cruiseOn, navDir == "A");
-  const bool interacting = pairOn || pairReq || callOn || touchDown || dragging || sliding;
-  if (idlePowerOffDue(&idlePowerOffTimer, millis(), navigating, interacting)) {
+  // StopWatch：断连（no link）满 2 分钟即真关机；配对/来电/滑页动画期间不计时。
+  // 触摸翻页不豁免——没连手机就是待机，到点直接断电。
+  const bool linked = bleConnected;
+  const bool busy = pairOn || pairReq || callOn || sliding;
+  if (idleLinkOffDue(&idlePowerOffTimer, millis(), linked, busy)) {
     bool queued;
     portENTER_CRITICAL(&mux);
     queued = rxTail != rxHead;
