@@ -2479,9 +2479,11 @@ void buttonTick() {
     }
     // 单按 A/B 键切换表情
     if (!a && lastA) {
+      CompanionMode::noteInteraction();
       CompanionMode::avatar.previous(now);
       CompanionMode::startVibration(125, 35);
     } else if (!b && lastB) {
+      CompanionMode::noteInteraction();
       CompanionMode::avatar.next(now);
       CompanionMode::startVibration(125, 35);
     }
@@ -10220,9 +10222,60 @@ void loop() {
   musicTick();
   weatherTick();                                       // v5.3 天气页
   leanTick();                                          // StopWatch：倾角与 G 值仪表页
+
+  // 伴侣模式每帧渲染与超时调度
   if (page == 4 && !sliding && !callOn && !pairOn) {
     CompanionMode::tick();
+
+    const uint32_t now = millis();
+    const uint32_t idleMs = now - CompanionMode::lastInteractionAtMs;
+
+    if (inNav) {
+      // 导航过程中进入伴侣模式：1 分钟无互动或快到路口前自动返回导航界面；导航过程中永不休眠
+      if (idleMs >= 60000UL || (navDir != "S" && navDir.length() && navDist > 0 && navDist < 200)) {
+        Serial.println("[Companion] In navigation: 1 min idle or turn ahead -> Return to navigation");
+        showPageAnimated(0, 0, 1);
+      }
+    } else {
+      // 非导航状态：
+      idlePowerPollSupply();
+      const bool isExtPower = idlePowerSupply.sampled && !idlePowerSupply.batteryOnly;
+      if (!isExtPower) {
+        // 电池待机情况下：5 分钟无互动操作就进入休眠
+        if (idleMs >= 300000UL) {
+          Serial.println("[Companion] Battery standby: 5 min idle -> Power off/Deep sleep");
+          idlePowerOffShutdown();
+        }
+      }
+      // 接电情况下：永不休眠，持续运行伴侣表情
+    }
   }
+
+  // 手机 App 连接成功后自动跳到主程序界面
+  static bool wasBleAuthed = false;
+  bool authedNow = bleConnected && bleAuthed;
+  if (authedNow && !wasBleAuthed) {
+    if (page == 4 && !sliding) {
+      Serial.println("[Companion] Phone connected & authed -> Return to home screen");
+      showPageAnimated(0, 0, 1);
+    }
+  }
+  wasBleAuthed = authedNow;
+
+  // 主程序界面待机：2 分钟内无连接且无操作自动进入伴侣模式（电池与接电均适用）
+  static unsigned long homeNoConnSince = 0;
+  const unsigned long loopNow = millis();
+  if (page == 0 && !inNav && !bleConnected && !sliding && !callOn && !pairOn && !fxOn && !touchDown && !dragging) {
+    if (homeNoConnSince == 0) homeNoConnSince = loopNow;
+    if (loopNow - homeNoConnSince >= 120000UL) {
+      homeNoConnSince = loopNow;
+      Serial.println("[Companion] 2 min unconnected on home screen -> Auto enter avatar mode");
+      showPageAnimated(4, 0, -1);
+    }
+  } else {
+    homeNoConnSince = loopNow;
+  }
+
   if (inNav && navDirty && !fxOn && !callOn && !pairOn && page == 0 && !sliding) {
     drawNavFrame();
     navDirty = false;
@@ -10243,11 +10296,11 @@ void loop() {
     frameIsMap = false;
   }
   idlePowerPollSupply();
-  // Idle phone traffic does not count as navigation; external power inhibits off.
-  const bool navigating = idlePowerOffNavigationActive(
+  // 导航中永远不能休眠；伴侣模式有单独的 5 分钟超时休眠逻辑
+  const bool navigating = inNav || cruiseOn || idlePowerOffNavigationActive(
       bleConnected && bleAuthed, inNav, cruiseOn, navDir == "A");
-  const bool interacting = pairOn || pairReq || callOn || touchDown || dragging || sliding;
-  if (idlePowerOffDueOnBattery(&idlePowerOffTimer, millis(), navigating, interacting, &idlePowerSupply)) {
+  const bool interacting = pairOn || pairReq || callOn || touchDown || dragging || sliding || (page == 4);
+  if (!inNav && idlePowerOffDueOnBattery(&idlePowerOffTimer, millis(), navigating, interacting, &idlePowerSupply)) {
     bool queued;
     portENTER_CRITICAL(&mux);
     queued = rxTail != rxHead;
@@ -10255,7 +10308,7 @@ void loop() {
     if (!queued) {
       // Never decide from the 5-second battery UI cache. Re-read at the deadline.
       idlePowerPollSupply(true);
-      if (idlePowerOffDueOnBattery(&idlePowerOffTimer, millis(), navigating, interacting, &idlePowerSupply))
+      if (!inNav && idlePowerOffDueOnBattery(&idlePowerOffTimer, millis(), navigating, interacting, &idlePowerSupply))
         idlePowerOffShutdown();
     }
   }

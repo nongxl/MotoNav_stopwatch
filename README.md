@@ -219,6 +219,14 @@ licenses 和各第三方库目录保留原许可及版权声明。高德 SDK 通
 
 项目自有代码及原创素材按 [非商业使用条款](LICENSE.md) 提供，不采用 MIT/Apache 等允许商业使用的许可。禁止未经许可倒卖源码、固件、安装包，或以付费代刷、打包销售、硬件捆绑销售等方式获利。第三方组件、地图和天气服务仍适用各自的许可及规则。
 
+## 致谢与衍生声明
+
+本项目在 `avatar` 分支中的伴侣模式（Companion Mode）动态表情引擎、关键帧插值与体感交互算法，衍生并移植自优秀的开源项目 **[m5stack-stopwatch-avatar](https://github.com/Trentct/m5stack-stopwatch-avatar)**（作者：[Trentct](https://github.com/Trentct)）。
+
+- **项目链接**：[m5stack-stopwatch-avatar](https://github.com/Trentct/m5stack-stopwatch-avatar) (`https://github.com/Trentct/m5stack-stopwatch-avatar.git`)
+- **致谢与说明**：衷心感谢原作者 Trentct 为 M5Stack StopWatch 圆屏设计并实现的精彩表情角色 KK。其纯程序化实时矢量绘制、微动注视算法、六轴姿态跟随与多级震动反馈为本项目带来了极具温度的交互体验。本项目在此基础上适配了 MotoNav 的双缓冲图形管线，实现了从主程序界面滑入伴侣模式、长按 AB 键安全返回主界面、待机与休眠智能调度以及角色扩展接口。
+
+
 
 圆屏 v7.10.0 与 iOS v0.11.0 增加 iPhone AMS 歌曲信息：歌名、歌手、专辑、状态及进度，保留已实测可用的网易云 HID 媒体按键。详见 [媒体控制与歌曲信息](docs/BLE-HID.md)。
 

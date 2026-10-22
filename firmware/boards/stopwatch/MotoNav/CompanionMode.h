@@ -169,12 +169,18 @@ class CompanionMode {
     }
   }
 
+  static uint32_t lastInteractionAtMs;
+  static void noteInteraction() {
+    lastInteractionAtMs = millis();
+  }
+
   // 初始化伴侣模式
   static void begin() {
     if (initialized) return;
     setupVibration();
     avatar.begin(&adapter);
     initialized = true;
+    lastInteractionAtMs = millis();
     Serial.println("[Companion] Avatar engine initialized");
   }
 
@@ -186,6 +192,7 @@ class CompanionMode {
     gestureCommitted = false;
     touchPressed = false;
     avatar.invalidate();
+    noteInteraction();
     startVibration(140, 40);
     Serial.println("[Companion] Entered companion mode (Role: KK)");
   }
@@ -198,6 +205,7 @@ class CompanionMode {
 
   // 触发指定表情并带轻微震动
   static void trigger(ExpressionId expression, uint32_t nowMs, uint16_t firstTransitionMs = 0) {
+    noteInteraction();
     avatar.show(expression, nowMs, true, firstTransitionMs);
     startVibration(150, 40);
     Serial.printf("[Companion] Trigger expression: %s\n", avatar.activeName());
@@ -244,10 +252,14 @@ class CompanionMode {
         touchDownAtMs = nowMs;
         gestureAxis = GestureAxis::None;
         gestureCommitted = false;
+        noteInteraction();
       }
 
       const int deltaX = touchX - touchStartX;
       const int deltaY = touchY - touchStartY;
+      if (abs(deltaX) > 4 || abs(deltaY) > 4) {
+        noteInteraction();
+      }
 
       // 长按不动（持续超过 650ms 且位移很小）触发生气表情
       if (!gestureCommitted && gestureAxis == GestureAxis::None &&
@@ -378,6 +390,10 @@ class CompanionMode {
     previousAccelZ = screenAccelZ;
     shakeEnergy = shakeEnergy * 0.72f + jerk * 0.28f;
 
+    if (jerk > 0.18f || fabsf(screenGyroX) > 25.0f || fabsf(screenGyroY) > 25.0f) {
+      noteInteraction();
+    }
+
     if (imuCalibrationCount < kImuCalibrationSamples) return;
 
     const float shakeIntensity = std::max(0.0f, std::min(1.0f, (shakeEnergy - 0.055f) / 0.48f));
@@ -492,3 +508,4 @@ uint8_t CompanionMode::shakeSwingCount = 0;
 int8_t CompanionMode::previousShakeDirection = 0;
 uint32_t CompanionMode::shakeSequenceStartedMs = 0;
 uint32_t CompanionMode::lastStrongShakeMs = 0;
+uint32_t CompanionMode::lastInteractionAtMs = 0;
