@@ -9767,6 +9767,7 @@ void handleText(const String &m) {
   if (m == "#o") { ghostN = 0; navDirty = true; return; }   // v4.4 不显示原路线
   if (m == "#WXRESET") { wxHave = false; wxExtra = false; wxDetail = 0; wxDirty = true; return; }
   if (m.startsWith("#WX,")) { parseWeatherExtra(m); return; }
+  if (m.startsWith("#W,")) { parseWeather(m); return; }   // v5.3 天气
   if (m.startsWith("#TIME,")) {
     time_t ep = (time_t)strtoul(m.c_str() + 6, NULL, 10);
     if (ep > 1700000000) {
