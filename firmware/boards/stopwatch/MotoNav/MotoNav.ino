@@ -4137,7 +4137,8 @@ void batPoll() {
     batMv = mv;
     static uint16_t filt = 0;
     filt = filt == 0 ? mv : (filt * 7 + mv + 4) / 8;
-    pct = (int)constrain((int32_t)(filt - 3300) * 100 / 900, 0, 100);
+    // 锂电池截止电压与实际容量曲线校准：3300mV(0%) ~ 4150mV(100%)，跨度 850mV
+    pct = (int)constrain((int32_t)(filt - 3300) * 100 / 850, 0, 100);
   }
   // v7.2 偶尔读不到电池：先沿用上次的电量，连续 3 次读不到才当成没接电池
   static int missCnt = 0;
@@ -4146,6 +4147,10 @@ void batPoll() {
   // 充电中 = 有外部供电（Vin>4V）且 CHG_STAT 脚为低；插着 USB 只看 Vin
   bool chg = present && vinOK && vin > 4000 && chgStat == 0;
   bool usb = vinOK && vin > 4000;
+  // 充满状态处理：插着 USB、电压已达高位（>=4080mV）且硬件充电指示截止（chgStat != 0），直接置为 100%
+  if (usb && chgStat != 0 && pct >= 88 && batMv >= 4080) {
+    pct = 100;
+  }
   bool changed = pct != batPct || chg != batChg || usb != usbIn;
   batPct = pct; batChg = chg; usbIn = usb;
   if (mediaHid && changed && pct >= 0 && bleConnected) mediaHid->setBatteryLevel((uint8_t)constrain(pct, 0, 100));
