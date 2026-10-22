@@ -115,7 +115,7 @@ class AvatarEngine {
   };
 
   bool begin(AvatarDisplayAdapter* display = nullptr);
-  void update(uint32_t nowMs);
+  bool update(uint32_t nowMs);
   void renderStatic(uint32_t nowMs);
   void show(ExpressionId expression, uint32_t nowMs, bool autoReturn = true,
             uint16_t firstTransitionMs = 0);

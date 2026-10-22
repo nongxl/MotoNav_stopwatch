@@ -1354,13 +1354,7 @@ void AvatarEngine::render(uint32_t nowMs) {
   }
 
   display_->startWrite();
-  if (requiresFullClear_) {
-    display_->fillScreen(kBackground);
-    requiresFullClear_ = false;
-  } else {
-    clearDirtyRect(mergeRects(previousLeftBounds_, leftBounds));
-    clearDirtyRect(mergeRects(previousRightBounds_, rightBounds));
-  }
+  display_->fillScreen(kBackground);
   drawEye(renderedPose.leftEye, centerX, centerY, blink);
   drawEye(renderedPose.rightEye, centerX, centerY, blink);
   if (targetExpression_ == ExpressionId::Dizzy) {
@@ -1423,8 +1417,8 @@ void AvatarEngine::recordRenderMetrics(uint32_t nowMs,
   previousRenderStartedUs_ = 0;
 }
 
-void AvatarEngine::update(uint32_t nowMs) {
-  if (!ready_) return;
+bool AvatarEngine::update(uint32_t nowMs) {
+  if (!ready_) return false;
 
   const uint32_t elapsed = nowMs - transitionStartedMs_;
   if (transitionDurationMs_ > 0 && elapsed < transitionDurationMs_) {
@@ -1440,7 +1434,7 @@ void AvatarEngine::update(uint32_t nowMs) {
   const uint32_t nowUs = micros();
   const bool frameDue =
       nextFrameUs_ == 0 || static_cast<int32_t>(nowUs - nextFrameUs_) >= 0;
-  if (!forceRender_ && !frameDue) return;
+  if (!forceRender_ && !frameDue) return false;
 
   if (forceRender_ || nextFrameUs_ == 0) {
     nextFrameUs_ = nowUs + kFrameIntervalUs;
@@ -1453,4 +1447,5 @@ void AvatarEngine::update(uint32_t nowMs) {
   }
   forceRender_ = false;
   render(nowMs);
+  return true;
 }

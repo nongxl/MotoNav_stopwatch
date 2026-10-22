@@ -470,8 +470,9 @@ class CompanionMode {
     const uint32_t nowMs = millis();
     updateVibration(nowMs);
     handleImu(nowMs);
-    avatar.update(nowMs);
-    flushAsync();
+    if (avatar.update(nowMs)) {
+      flushAsync();
+    }
   }
 };
 
