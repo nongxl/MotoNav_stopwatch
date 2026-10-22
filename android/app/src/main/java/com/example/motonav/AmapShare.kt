@@ -71,15 +71,24 @@ object AmapShare {
         try {
             info = "正在解析高德分享链接"
             val url = findUrl(text) ?: throw Exception("没找到高德的分享链接")
-            val p = resolve(url) ?: throw Exception("链接里没找到路线信息（可能不是路线分享，或者链接已过期）\n最后打开的是：${lastUrl.take(1500)}")
-            val route = when {
-                p.mode.contains("motor") -> loadMotor(p)
-                p.mode.contains("ride") -> loadRide(p)
-                p.mode.isEmpty() || p.mode.contains("car") -> loadCar(p)
-                else -> throw Exception("暂不支持这类分享路线：${p.mode}")
+            val p = resolve(url)
+            val route = if (p == null) {
+                // 行程报告分享：短链跳到 static3.amap.com/activity/2020NewDriveSafeV5/index.html?urlParameter=…
+                // 页面本身没有路线数据（Vue 单页，靠 urlParameter 往后端要），得拿 urlParameter 去 m5.amap.com 的两个接口还原
+                val rp = Regex("""[?&]urlParameter=([^&"'\s<>]+)""").find(lastUrl)?.groupValues?.get(1)
+                    ?: Regex("""[?&]urlParameter=([^&"'\s<>]+)""").find(url)?.groupValues?.get(1)
+                    ?: throw Exception("链接里没找到路线信息（可能不是路线分享，或者链接已过期）\n最后打开的是：${lastUrl.take(1500)}")
+                loadReport(rp)
+            } else {
+                when {
+                    p.mode.contains("motor") -> loadMotor(p)
+                    p.mode.contains("ride") -> loadRide(p)
+                    p.mode.isEmpty() || p.mode.contains("car") -> loadCar(p)
+                    else -> throw Exception("暂不支持这类分享路线：${p.mode}")
+                }
             }
             route.sourceUrl = url
-            route.nativeUri = p.nativeUri
+            route.nativeUri = p?.nativeUri ?: ""
             info = if (route.endpointsOnly) "已读取${route.kind}起终点，需重新规划"
                 else "已还原${route.kind}路线：${route.pts.size} 个坐标点"
             android.util.Log.i("MotoNavShare", info)
@@ -99,16 +108,16 @@ object AmapShare {
         throw Exception("高德未能还原${kind}原路线（${json.optInt("code")}）：${message.take(200)}\n请重新在高德中分享这条路线后重试。")
     }
 
-    /** v4.4.2 摩托车路线：m.amap.com/service/navigation/motor（数据里有多条备选路线，取分享时选中的那条） */
-    private fun loadMotor(p: Share): Route {
-        val q = "https://m.amap.com/service/navigation/motor?shareParam=${URLEncoder.encode(p.share, "UTF-8")}&uuid=${UUID.randomUUID()}"
-        val j = JSONObject(get(q).second)
-        checkRouteResponse(j, "摩托车")
-        val data = j.optJSONObject("data") ?: throw Exception("高德返回的数据里没有路线")
-        val paths = data.optJSONArray("paths") ?: throw Exception("高德返回的数据里没有路线")
-        if (paths.length() == 0) throw Exception("高德返回的路线是空的")
-        val pl = paths.optJSONObject(if (p.pathIdx in 0 until paths.length()) p.pathIdx else 0)
-            ?: throw Exception("高德返回的数据里没有路线")
+    /**
+     * 把一条高德路线数据变成 Route。手机网页的 motor 接口（data.paths[0]）和
+     * 行程报告还原接口（restorationInfo.route.paths[0]）结构一样，都用这个
+     */
+    private fun routeFromPath(
+        pl: JSONObject,
+        startName: String, startLat: Double, startLng: Double,
+        endName: String, endLat: Double, endLng: Double,
+        kind: String, restored: Boolean
+    ): Route {
         val all = ArrayList<DoubleArray>()
         val co = pl.optJSONArray("coords")
         if (co != null) for (i in 0 until co.length()) {
@@ -135,9 +144,77 @@ object AmapShare {
             val from = a[0].coerceIn(0, all.size - 1); val to = b[1].coerceIn(from, all.size - 1)
             roads.add(Road(g.optString("name"), g.optInt("dist"), all.subList(from, to + 1).toList()))
         }
-        return Route(p.sName, p.sLat, p.sLng, p.eName, p.eLat, p.eLng, dedup(all), roads,
+        return Route(startName, startLat, startLng, endName, endLat, endLng, dedup(all), roads,
             pl.optInt("distance"), pl.optInt("travel_time"), pl.optInt("traffic_light_count"),
-            j.optBoolean("isRestoreRoute", false), "摩托车")
+            restored, kind)
+    }
+
+    /** v4.4.2 摩托车路线：m.amap.com/service/navigation/motor（数据里有多条备选路线，取分享时选中的那条） */
+    private fun loadMotor(p: Share): Route {
+        val q = "https://m.amap.com/service/navigation/motor?shareParam=${URLEncoder.encode(p.share, "UTF-8")}&uuid=${UUID.randomUUID()}"
+        val j = JSONObject(get(q).second)
+        checkRouteResponse(j, "摩托车")
+        val data = j.optJSONObject("data") ?: throw Exception("高德返回的数据里没有路线")
+        val paths = data.optJSONArray("paths") ?: throw Exception("高德返回的数据里没有路线")
+        if (paths.length() == 0) throw Exception("高德返回的路线是空的")
+        val pl = paths.optJSONObject(if (p.pathIdx in 0 until paths.length()) p.pathIdx else 0)
+            ?: throw Exception("高德返回的数据里没有路线")
+        return routeFromPath(
+            pl, p.sName, p.sLat, p.sLng, p.eName, p.eLat, p.eLng, "摩托车",
+            j.optBoolean("isRestoreRoute", false)
+        )
+    }
+
+    /**
+     * 行程报告分享（高德「导航结束 → 分享行程」或「我的足迹 → 分享」）：
+     * 短链 → static3.amap.com/activity/2020NewDriveSafeV5/index.html?urlParameter=…
+     * 拿 urlParameter 调两个接口：
+     * 1. m5.amap.com/ws/share/lbs/info          取起点、终点、导航类型（2 驾车 / 9 摩托车）
+     * 2. m5.amap.com/ws/share/lbs/route/restoration  取整条路线（coords/group/segments，和 motor 接口同结构）
+     */
+    private fun loadReport(rawParam: String): Route {
+        val p = URLEncoder.encode(fullDecode(rawParam), "UTF-8")
+        val infoText = get("https://m5.amap.com/ws/share/lbs/info?param=$p").second
+        val info = JSONObject(infoText)
+        if (info.optInt("code") != 1) {
+            throw Exception("高德没有返回这趟行程（可能分享已过期或被取消）")
+        }
+        val idata = info.optJSONObject("data") ?: throw Exception("高德没有返回这趟行程（可能分享已过期或被取消）")
+        val shareMembers = idata.optJSONArray("shareMembers")
+        val member = shareMembers?.optJSONObject(0) ?: JSONObject()
+        val dinfo = member.optJSONObject("driveInfo") ?: JSONObject()
+        val oi = dinfo.optJSONObject("otherInfo") ?: JSONObject()
+        val dest = oi.optJSONObject("destination") ?: JSONObject()
+        val outset = oi.optJSONObject("outset") ?: JSONObject()
+        // 高德坐标：x = 经度、y = 纬度
+        val eLng = dest.optDouble("x", Double.NaN)
+        val eLat = dest.optDouble("y", Double.NaN)
+        if (eLng.isNaN() || eLat.isNaN()) {
+            throw Exception("这趟行程没有终点信息（可能导航还没结束）")
+        }
+        val sLng = outset.optDouble("x", eLng)
+        val sLat = outset.optDouble("y", eLat)
+        val sName = outset.optString("name").takeIf { it.isNotBlank() && it != "null" } ?: "分享的起点"
+        val eName = dest.optString("name").takeIf { it.isNotBlank() && it != "null" } ?: "分享的终点"
+        val kind = if (dinfo.optInt("naviType") == 9) "摩托车" else "驾车"
+
+        val restoText = get("https://m5.amap.com/ws/share/lbs/route/restoration?param=$p").second
+        val resto = JSONObject(restoText)
+        if (resto.optInt("code") != 1) {
+            throw Exception("高德没返回这条路线（可能分享已过期）")
+        }
+        val rd = resto.optJSONObject("data") ?: throw Exception("高德没返回这条路线（可能分享已过期）")
+        val rs = rd.optString("restorationInfo")
+        if (rs.isBlank() || rs == "null") throw Exception("高德没返回这条路线（可能分享已过期）")
+        val rj = JSONObject(rs)
+        val rroute = rj.optJSONObject("route") ?: throw Exception("高德没返回这条路线（可能分享已过期）")
+        val paths = rroute.optJSONArray("paths") ?: throw Exception("高德没返回这条路线（可能分享已过期）")
+        val pl = paths.optJSONObject(0) ?: throw Exception("高德没返回这条路线（可能分享已过期）")
+
+        return routeFromPath(
+            pl, sName, sLat, sLng, eName, eLat, eLng, kind,
+            rroute.optInt("code") == 1
+        )
     }
 
     /** 驾车路线：m.amap.com/service/navigation/driving.json */
