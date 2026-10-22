@@ -12,6 +12,27 @@ typedef struct {
   bool armed;
 } IdlePowerOffTimer;
 
+typedef struct {
+  uint32_t checkedAt;
+  bool sampled;
+  bool batteryOnly;
+} IdlePowerSupply;
+
+static inline void idlePowerSupplyUpdate(IdlePowerSupply *supply, uint32_t now,
+                                         int axpStatus1) {
+  supply->checkedAt = now;
+  supply->sampled = true;
+  /* STATUS1 bit 5: VBUS-good (or Vin>4000mV for StopWatch). */
+  supply->batteryOnly = axpStatus1 >= 0 && axpStatus1 <= 255 &&
+                        (axpStatus1 & 0x20) == 0;
+}
+
+static inline bool idlePowerSupplyAllowsOff(const IdlePowerSupply *supply,
+                                           uint32_t now) {
+  return supply->sampled && supply->batteryOnly &&
+         (uint32_t)(now - supply->checkedAt) <= 1500;
+}
+
 static inline void idlePowerOffReset(IdlePowerOffTimer *timer, uint32_t now) {
   timer->since = now;
   timer->armed = true;
@@ -32,4 +53,12 @@ static inline bool idlePowerOffDue(IdlePowerOffTimer *timer, uint32_t now,
   return (uint32_t)(now - timer->since) >= IDLE_POWER_OFF_MS;
 }
 
+static inline bool idlePowerOffDueOnBattery(IdlePowerOffTimer *timer, uint32_t now,
+                                           bool navigating, bool interacting,
+                                           const IdlePowerSupply *supply) {
+  return idlePowerOffDue(timer, now, navigating,
+                        interacting || !idlePowerSupplyAllowsOff(supply, now));
+}
+
 #endif
+

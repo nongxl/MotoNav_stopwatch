@@ -367,6 +367,7 @@ int laneN = 0;                // 车道数，0 表示不显示
 bool tripOn = false;
 bool cruiseOn = false;        // v4.8 巡航模式（没有目的地，只显示地图、车速、电子眼、安全提示）
 IdlePowerOffTimer idlePowerOffTimer = {0, false};
+IdlePowerSupply idlePowerSupply = {0, false, false};
 volatile bool powerOffPending = false;
 bool cleanOn = false;         // v4.9 清爽模式：地图照常，去掉红绿灯、电子眼、安全提示、测速牌和行程信息（"#w,1/0"）
 int tripRemainM = 0, tripEta = 0, tripLights = 0;
@@ -1521,6 +1522,25 @@ void batInit() {
   if (!pmuOK) return;
   uint16_t mv = 0;
   if (StopWatchBoard::pm1.readVbat(&mv) != M5PM1_OK || mv < 2800) pmuOK = false;
+}
+
+// StopWatch: M5PM1 Vin > 4000mV indicates USB external power.
+// Unknown/stale power readings keep the device awake, rather than guessing battery.
+void idlePowerPollSupply(bool force = false) {
+  const uint32_t now = millis();
+  if (!force && idlePowerSupply.sampled &&
+      (uint32_t)(now - idlePowerSupply.checkedAt) < 500) return;
+  const bool wasBattery = idlePowerSupplyAllowsOff(&idlePowerSupply, now);
+  uint16_t vin = 0;
+  // If Vin read fails or pmu is not OK, status is -1 (unknown) so we stay awake safely.
+  int status = -1;
+  if (pmuOK && StopWatchBoard::pm1.readVin(&vin) == M5PM1_OK) {
+    status = (vin > 4000) ? 0x20 : 0x00; // Bit 5 represents VBUS/external power
+  }
+  idlePowerSupplyUpdate(&idlePowerSupply, now, status);
+  // Unplugging / recovering a valid battery-only reading starts a full interval.
+  if (!wasBattery && idlePowerSupplyAllowsOff(&idlePowerSupply, now))
+    idlePowerOffReset(&idlePowerOffTimer, now);
 }
 
 // 小电池图标：x0,y0 = 左上角（电池身 24x12，右边小凸头，再右边是百分比数字）
@@ -3163,12 +3183,12 @@ String ringDir = "";
 struct MapTheme { uint16_t block, road, park, water, route, route2, hud, blip, done, done2; };
 #define THEME_N 12
 const MapTheme THEMES[THEME_N] = {
-  {0xDEFB, 0x3186, 0x5DEB, 0x4C9B, 0xA21E, 0x58F1, 0xFFFF, 0xFE80, 0x94B3, 0x5AEC},   // 0 原版
+  {0xDEFB, 0x3186, 0x5DEB, 0x4C9B, 0x249F, 0xFFFF, 0xFFFF, 0xFE80, 0x94B3, 0x5AEC},   // 0 原版
   {0xE6D9, 0x3187, 0x760D, 0x4E3B, 0xF258, 0x78EC, 0x6F5F, 0xF258, 0xA4B4, 0x62CC},   // 1 罪恶都市：暖沙色街区、青绿水面、粉紫路线
   {0x3A08, 0x9D15, 0x4327, 0x2A8F, 0xA2DF, 0x38EC, 0xFFFF, 0xFE87, 0x738F, 0x18E4},   // 2 GTA5：深色地面、浅色道路、紫色路线
   {0x0021, 0x04B6, 0x0103, 0x1847, 0xF815, 0x5007, 0xB7FF, 0xFF20, 0x39EA, 0x10A3},   // 3 赛博霓虹
   {0xEF18, 0xF5CD, 0xC6B3, 0x9E3A, 0xB0A3, 0x5841, 0xFFFF, 0x298F, 0xA490, 0x6B0A},   // 4 复古纸地图
-  {0x0000, 0x39C7, 0x08A1, 0x0863, 0xFFFF, 0x39E7, 0xFFFF, 0xFFFF, 0x528A, 0x2104},   // 5 极简黑白
+  {0x0000, 0x8410, 0x0000, 0x0000, 0xFFFF, 0x39E7, 0xFFFF, 0xFFFF, 0x528A, 0x2104},   // 5 极简黑白
   {0x094B, 0xDF5F, 0x1A50, 0x2B35, 0xFE87, 0x08E8, 0xFFFF, 0xFE87, 0x6C76, 0x116B},   // 6 蓝图
   {0x8E0E, 0xE7DA, 0x334A, 0x08C4, 0x08C4, 0xE7DA, 0xE7DA, 0x08C4, 0x334A, 0x8E0E},   // 7 掌机像素
   {0x00C1, 0x0B46, 0x0183, 0x0084, 0x57F0, 0x01C2, 0x97F5, 0xCFF9, 0x1AC6, 0x0101},   // 8 雷达
@@ -3178,12 +3198,12 @@ const MapTheme THEMES[THEME_N] = {
 };
 // v3.0 夜间配色：地面压暗、道路变成浅色线条，路线保持鲜艳（晚上一眼就能看到）
 const MapTheme THEMES_NIGHT[THEME_N] = {
-  {0x18E5, 0x5B0E, 0x19E5, 0x118B, 0xA21E, 0x2848, 0xFFFF, 0xFE80, 0x4A8B, 0x0862},   // 0 原版·夜：深蓝灰
+  {0xDEFB, 0x3186, 0x5DEB, 0x4C9B, 0x249F, 0xFFFF, 0xFFFF, 0xFE80, 0x4A8B, 0x0862},   // 0 原版·夜：深蓝灰
   {0x20C7, 0x6271, 0x1207, 0x0A2B, 0xF258, 0x5047, 0x6F5F, 0xF258, 0x7370, 0x1063},   // 1 罪恶都市·夜：深紫街区、霓虹粉路线
   {0x10C3, 0x5AED, 0x1163, 0x1107, 0xAB3F, 0x30AB, 0xEF5D, 0xFE87, 0x4229, 0x0841},   // 2 GTA5·夜：更深的地面
   {0x0021, 0x04B6, 0x0103, 0x1847, 0xF815, 0x5007, 0xB7FF, 0xFF20, 0x39EA, 0x10A3},   // 3 赛博霓虹·夜
   {0x0021, 0x04B6, 0x0103, 0x1847, 0xF815, 0x5007, 0xB7FF, 0xFF20, 0x39EA, 0x10A3},   // 4 复古纸地图·夜 = 霓虹
-  {0x0000, 0x39C7, 0x08A1, 0x0863, 0xFFFF, 0x39E7, 0xFFFF, 0xFFFF, 0x528A, 0x2104},   // 5 极简黑白·夜
+  {0x0000, 0x8410, 0x0000, 0x0000, 0xFFFF, 0x39E7, 0xFFFF, 0xFFFF, 0x528A, 0x2104},   // 5 极简黑白·夜
   {0x00C7, 0xAE3D, 0x118B, 0x1A50, 0xFE87, 0x00A5, 0xFFFF, 0xFE87, 0x4B52, 0x08E7},   // 6 蓝图·夜
   {0x334A, 0x8E0E, 0x08C4, 0x08C4, 0xE7DA, 0x08C4, 0xE7DA, 0xE7DA, 0x334A, 0x08C4},   // 7 掌机像素·夜
   {0x00C1, 0x0B46, 0x0183, 0x0084, 0x57F0, 0x01C2, 0x97F5, 0xCFF9, 0x1AC6, 0x0101},   // 8 雷达·夜
@@ -3818,13 +3838,17 @@ void drawRasterMap(float cx, float cy, float sc, float cs, float sn) {
   unsigned long t0 = millis();
   RM.fb = gfx->getFramebuffer();
   if (rasHasPal) {                                     // v6.1 卫星图：用照片自带的颜色（夜间压暗）
-    for (int i = 0; i < 16; i++) RM.pal[i] = nightOn ? blendF(rasPal[i], C_BLACK, 110) : rasPal[i];
+    for (int i = 0; i < 16; i++) RM.pal[i] = (themeIdx != 0 && nightOn) ? blendF(rasPal[i], C_BLACK, 110) : rasPal[i];
   } else {
     for (int i = 0; i < 16; i++) RM.pal[i] = C_BLOCK;
     RM.pal[1] = C_ROADM; RM.pal[2] = C_PARK; RM.pal[3] = C_WATER;
     RM.pal[4] = blendF(C_BLOCK,C_ROADM,64);   // 俯视屋顶
     RM.pal[5] = blendF(C_BLOCK,C_ROADM,112);  // 屋顶轮廓
     RM.pal[6] = RM.pal[4]; RM.pal[7] = RM.pal[5]; // 保留原绿地类别的屋顶
+  }
+  if (styleIdx() == ST_MINIMAL) {
+    for (int i=0;i<16;i++) RM.pal[i]=0x0000;
+    RM.pal[1]=0x8410; // independent monochrome road mask; no building/park/water layer
   }
   RM.pix2 = styleIdx() == ST_PIXEL;
   RM.cx = cx; RM.cy = cy; RM.sc = sc; RM.cs = cs; RM.sn = sn;
@@ -4045,7 +4069,7 @@ void drawGhost(float cx, float cy, float sc, float cs, float sn, float viewR, fl
       float dx = ghostX[k] - cx, dy = ghostY[k] - cy;
       tmpX[m] = CX + sc * (dx * cs - dy * sn); tmpY[m] = MAP_PY - sc * (dx * sn + dy * cs); m++;
     }
-    if (m >= 2) mapPolyline(tmpX, tmpY, m, w, 0xFD20, true);
+    if (m >= 2) mapPolyline(tmpX, tmpY, m, w, styleIdx()==ST_MINIMAL ? 0x8410 : 0xFD20, true);
   }
 }
 
@@ -8806,8 +8830,8 @@ void drawMapFrame() {
     if (split > 0 && trailMode == 1)
       drawRouteRange(0, split, cx, cy, sc, cs, sn, viewR, w0 * 0.8f, w1 * 0.75f, TH.done2, TH.done);
     drawRouteRange(split, (float)(routeN - 1), cx, cy, sc, cs, sn, viewR, w0, w1, C_ROUTE2, C_ROUTE);
-    if (!dragon && curveOn && routeCurv) drawRouteCurved(split, (float)(routeN - 1), cx, cy, sc, cs, sn, viewR, w1);   // v6.1
-    if (!dragon) drawTraffic(cx, cy, sc, cs, sn, viewR, w0, w1, split);                       // v5.0 路况颜色
+    if (!dragon && styleIdx()!=ST_MINIMAL && curveOn && routeCurv) drawRouteCurved(split, (float)(routeN - 1), cx, cy, sc, cs, sn, viewR, w1);   // v6.1
+    if (!dragon && styleIdx()!=ST_MINIMAL) drawTraffic(cx, cy, sc, cs, sn, viewR, w0, w1, split);                       // v5.0 路况颜色
   }
   profMark(2);
   obsN = 0;                                             // v3.8 占位框从头登记
@@ -8822,7 +8846,7 @@ void drawMapFrame() {
   profMark(3);
   {
     int st = styleIdx();                                // v6.1 纸地图、蓝图、掌机像素不压暗边缘
-    if (st != ST_DRAGON && st != ST_PAPER && st != ST_BLUEPRINT && st != ST_PIXEL) drawVignette(178, 211, 150);   // v2.9 雷达边缘渐暗
+    if (st != 0 && st != ST_MINIMAL && st != ST_DRAGON && st != ST_PAPER && st != ST_BLUEPRINT && st != ST_PIXEL) drawVignette(178, 211, 150);   // v2.9 雷达边缘渐暗
   }
   profMark(4);
   if (styleIdx() == ST_COMPASS) drawCompassRose(viewHdg);   // v6.1 罗盘刻度
@@ -9134,7 +9158,18 @@ void handleText(const String &m) {
   }
   if (m.startsWith("#t,")) {                             // v2.9 地图配色主题
     int t = m.substring(3).toInt();
-    if (t >= 0 && t < THEME_N) { themeIdx = t; navDirty = true; }   // v7.8.11 0~11
+    if (t >= 0 && t < THEME_N) {
+      // App 8.3.23 adds a third field: each style now owns its map data.
+      // Old Android/iOS #t,t commands keep their legacy recoloring behavior.
+      if (t != themeIdx && m.indexOf(',',3)>=0) {
+        rasterValid=false; rasterBackValid=false; mapValid=false;
+        for(int kind : {1,3}) {
+          Bulk &b=bulks[kind];b.id=-1;b.total=0;b.got=0;b.done=false;
+          memset(b.mask,0,sizeof(b.mask));
+        }
+      }
+      themeIdx = t; navDirty = true;
+    }   // v7.8.11 0~11
     return;
   }
   if (m.startsWith("#Q,")) { curveOn = m.substring(3).toInt() != 0; navDirty = true; return; }   // v6.2 弯道上色
@@ -9683,16 +9718,22 @@ void loop() {
     needFlush = false;
     frameIsMap = false;
   }
-  // Idle phone traffic (including HID/AMS) does not count as navigation.
+  idlePowerPollSupply();
+  // Idle phone traffic does not count as navigation; external power inhibits off.
   const bool navigating = idlePowerOffNavigationActive(
       bleConnected && bleAuthed, inNav, cruiseOn, navDir == "A");
   const bool interacting = pairOn || pairReq || callOn || touchDown || dragging || sliding;
-  if (idlePowerOffDue(&idlePowerOffTimer, millis(), navigating, interacting)) {
+  if (idlePowerOffDueOnBattery(&idlePowerOffTimer, millis(), navigating, interacting, &idlePowerSupply)) {
     bool queued;
     portENTER_CRITICAL(&mux);
     queued = rxTail != rxHead;
     portEXIT_CRITICAL(&mux);
-    if (!queued) idlePowerOffShutdown();
+    if (!queued) {
+      // Never decide from the 5-second battery UI cache. Re-read at the deadline.
+      idlePowerPollSupply(true);
+      if (idlePowerOffDueOnBattery(&idlePowerOffTimer, millis(), navigating, interacting, &idlePowerSupply))
+        idlePowerOffShutdown();
+    }
   }
   delay(mapNow ? 1 : 10);
 }
