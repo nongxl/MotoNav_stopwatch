@@ -244,6 +244,7 @@ class CompanionMode {
     const uint32_t nowMs = millis();
 
     if (isDown) {
+      noteInteraction();
       if (!touchPressed) {
         // 刚刚按下
         touchPressed = true;
@@ -252,14 +253,10 @@ class CompanionMode {
         touchDownAtMs = nowMs;
         gestureAxis = GestureAxis::None;
         gestureCommitted = false;
-        noteInteraction();
       }
 
       const int deltaX = touchX - touchStartX;
       const int deltaY = touchY - touchStartY;
-      if (abs(deltaX) > 4 || abs(deltaY) > 4) {
-        noteInteraction();
-      }
 
       // 长按不动（持续超过 650ms 且位移很小）触发生气表情
       if (!gestureCommitted && gestureAxis == GestureAxis::None &&
@@ -315,6 +312,7 @@ class CompanionMode {
       // 手指抬起
       if (touchPressed) {
         touchPressed = false;
+        noteInteraction();
         const bool consumed = gestureCommitted || gestureAxis != GestureAxis::None;
         avatar.releaseTouch();
         avatar.releaseSwipe();

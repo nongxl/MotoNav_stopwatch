@@ -2584,10 +2584,13 @@ void touchPoll() {
   uint8_t n = touch.getPoint(x, y, 1);
   if (page == 4) {
     if (n > 0) {
+      touchDown = true;
+      touchLastSeen = now;
       float tdx = x[0] - CX, tdy = y[0] - CX;
       touchVectorToCanvas(tdx, tdy);
       CompanionMode::handleTouch(true, (int16_t)lroundf(CX + tdx), (int16_t)lroundf(CX + tdy));
     } else {
+      touchDown = false;
       CompanionMode::handleTouch(false, 0, 0);
     }
     return;
@@ -10231,9 +10234,9 @@ void loop() {
     const uint32_t idleMs = now - CompanionMode::lastInteractionAtMs;
 
     if (inNav) {
-      // 导航过程中进入伴侣模式：1 分钟无互动或快到路口前自动返回导航界面；导航过程中永不休眠
-      if (idleMs >= 60000UL || (navDir != "S" && navDir.length() && navDist > 0 && navDist < 200)) {
-        Serial.println("[Companion] In navigation: 1 min idle or turn ahead -> Return to navigation");
+      // 导航过程中进入伴侣模式：1 分钟无互动才返回导航界面；导航过程中永不休眠
+      if (idleMs >= 60000UL) {
+        Serial.println("[Companion] In navigation: 1 min idle -> Return to navigation");
         showPageAnimated(0, 0, 1);
       }
     } else {
@@ -10251,10 +10254,10 @@ void loop() {
     }
   }
 
-  // 手机 App 连接成功后自动跳到主程序界面
-  static bool wasBleAuthed = false;
+  // 手机 App 连接成功后自动跳到主程序界面（仅非导航待机下触发）
+  static bool wasBleAuthed = bleConnected && bleAuthed;
   bool authedNow = bleConnected && bleAuthed;
-  if (authedNow && !wasBleAuthed) {
+  if (!inNav && authedNow && !wasBleAuthed) {
     if (page == 4 && !sliding) {
       Serial.println("[Companion] Phone connected & authed -> Return to home screen");
       showPageAnimated(0, 0, 1);
