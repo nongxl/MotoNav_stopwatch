@@ -300,6 +300,8 @@ bool frameIsMap = false;          // v2.2 这一帧是小地图（整帧重画�
 int qspiMHz = 40;                 // v2.3 屏幕数据线速度
 bool fastFlushOn = true;          // v2.6 快速刷屏
 
+#include "CompanionMode.h"        // StopWatch：伴侣模式（KK 表情引擎与互动）
+
 
 // ===== 颜色（RGB565）=====
 #define C_BLACK  0x0000
@@ -2160,14 +2162,14 @@ void animateCat() {
   needFlush = true;
 }
 
-// 页面：导航左滑天气，右滑音乐，上滑进入倾角仪表，下滑可查看天气
-int page = 0;                               // 0 = 导航 / 首页，1 = 天气，2 = 音乐，3 = 倾角与G值仪表
+// 页面：导航左滑天气，右滑音乐，上滑进入倾角仪表，下滑进入伴侣模式
+int page = 0;                               // 0 = 导航 / 首页，1 = 天气，2 = 音乐，3 = 倾角与G值仪表，4 = 伴侣模式
 unsigned long pageAt = 0;
 bool leanDirty = false;
 void drawLeanMeter();
 void leanMeterTap(int x, int y);
 
-// 页面顺序对应滑动位置：音乐在左(2)，主页居中(0)，天气在右(1)，倾角仪表在下(3)
+// 页面顺序对应滑动位置：音乐在左(2)，主页居中(0)，天气在右(1)，倾角仪表在下(3)，伴侣模式在上(4)
 void drawPageDots() {
   if (page == 0 && inNav) return;
   const int pageOrder[] = {2, 0, 1};
@@ -2176,6 +2178,8 @@ void drawPageDots() {
   }
   // 底部第4点：倾角与G值仪表在下方(3)，直观提示用户下方还有一个页面
   aaDisc(CX, 451, 3.5f, page == 3 ? C_WHITE : 0x4208);
+  // 顶部第5点：伴侣模式在上方(4)，直观提示用户上方还有一个伴侣模式
+  aaDisc(CX, 21, 3.5f, page == 4 ? C_WHITE : 0x4208);
 }
 
 void drawWaiting(int st) {
@@ -2184,6 +2188,7 @@ void drawWaiting(int st) {
   if (page == 2) { onWaitScreen = false; musicDirty = true; return; }
   if (page == 1) { onWaitScreen = false; wxDirty = true; return; }   // v5.3 正在看天气：先不画首页，滑回来时再画
   if (page == 3) { onWaitScreen = false; leanDirty = true; return; } // 正在看倾角仪表：先不画首页，滑回来时再画
+  if (page == 4) { onWaitScreen = false; return; }                   // 正在伴侣模式：不画首页
   gfx->fillScreen(C_BLACK);
   onWaitScreen = true; waitSt = st;          // v3.6 首页猫猫 → v4.6 像素骑手
   riderPrevF = -1; riderPrevZ = -2;
@@ -2451,6 +2456,39 @@ void buttonTick() {
   bool b = digitalRead(BTN_B);
   unsigned long now = millis();
 
+  // 伴侣模式专用按键逻辑：长按 AB 键返回主界面，单按 A/B 浏览表情
+  if (page == 4) {
+    static unsigned long abBothDownAt = 0;
+    static bool abHoldTriggered = false;
+    if (!a && !b) {
+      if (abBothDownAt == 0) abBothDownAt = now;
+      if (!abHoldTriggered && now - abBothDownAt >= 800) {
+        abHoldTriggered = true;
+        CompanionMode::startVibration(180, 70);
+        showPageAnimated(0, 0, 1); // 向下滑回主界面
+      }
+      lastA = a; lastB = b;
+      return;
+    } else {
+      abBothDownAt = 0;
+      if (a && b) abHoldTriggered = false;
+    }
+    if (abHoldTriggered) {
+      lastA = a; lastB = b;
+      return;
+    }
+    // 单按 A/B 键切换表情
+    if (!a && lastA) {
+      CompanionMode::avatar.previous(now);
+      CompanionMode::startVibration(125, 35);
+    } else if (!b && lastB) {
+      CompanionMode::avatar.next(now);
+      CompanionMode::startVibration(125, 35);
+    }
+    lastA = a; lastB = b;
+    return;
+  }
+
   // 当两个按键都释放时，解除组合键锁定
   if (a && b) {
     comboActive = false;
@@ -2542,6 +2580,16 @@ void touchPoll() {
   if (callAnswerSent && now - callAnswerAt > 4000) callAnswerSent = false;   // 4 秒还在响：允许再按一次
   int16_t x[5] = {0}, y[5] = {0};
   uint8_t n = touch.getPoint(x, y, 1);
+  if (page == 4) {
+    if (n > 0) {
+      float tdx = x[0] - CX, tdy = y[0] - CX;
+      touchVectorToCanvas(tdx, tdy);
+      CompanionMode::handleTouch(true, (int16_t)lroundf(CX + tdx), (int16_t)lroundf(CX + tdy));
+    } else {
+      CompanionMode::handleTouch(false, 0, 0);
+    }
+    return;
+  }
   if (n > 0) {
     if (!touchDown) {
       touchDown = true;
@@ -3299,6 +3347,7 @@ void renderPage(int p) {
   if (p == 2) drawMusic();
   else if (p == 1) drawWeather();
   else if (p == 3) drawLeanMeter();
+  else if (p == 4) CompanionMode::drawInitialFrame();
   else if (inNav) drawNavFrame();
   else drawWaiting(bleConnected ? WAIT_READY : WAIT_NOLINK);
   page = keep; sliding = ks;
@@ -3413,6 +3462,9 @@ void slideCommit() {
   } else if (page == 3) {
     onWaitScreen = false;
     leanDirty = true;
+  } else if (page == 4) {
+    onWaitScreen = false;
+    CompanionMode::enter();
   } else {
     if (inNav) navDirty = true;
     else { riderPrevF = -1; riderPrevZ = -2; catForce = true; }
@@ -3426,6 +3478,7 @@ void slideCancel() {
   if (page == 2) musicDirty = true;
   else if (page == 1) wxDirty = false;
   else if (page == 3) leanDirty = true;
+  else if (page == 4) { onWaitScreen = false; CompanionMode::drawInitialFrame(); }
   else if (inNav) navDirty = true;
   else { onWaitScreen = true; catForce = true; }
   needFlush = true;
@@ -3472,8 +3525,12 @@ void dragMove(int dx, int dy, unsigned long now) {
       if (dragHoriz || dragSign < 0) return;
       dragTarget = 0;
     }
+    else if (page == 4) {
+      // 伴侣模式在屏幕上方：由于长按 AB 键返回，这里不进行常规滑动换页，避免与表情互动冲突
+      return;
+    }
     else if (dragHoriz) dragTarget = dragSign < 0 ? 1 : 2;
-    else dragTarget = dragSign < 0 ? 3 : 1; // 手指上滑 dy < 0 进入 page 3(倾角)，下滑 dy > 0 进入 page 1(天气)
+    else dragTarget = dragSign < 0 ? 3 : 4; // 手指上滑 dy < 0 进入 page 3(倾角)，从上往下滑动 dy > 0 进入 page 4(伴侣模式)
     if (!slidePrepare(dragTarget)) return;
     dragging = true;
     dragP = 0; dragV = 0; dragT = now;
@@ -10163,6 +10220,9 @@ void loop() {
   musicTick();
   weatherTick();                                       // v5.3 天气页
   leanTick();                                          // StopWatch：倾角与 G 值仪表页
+  if (page == 4 && !sliding && !callOn && !pairOn) {
+    CompanionMode::tick();
+  }
   if (inNav && navDirty && !fxOn && !callOn && !pairOn && page == 0 && !sliding) {
     drawNavFrame();
     navDirty = false;
@@ -10199,5 +10259,5 @@ void loop() {
         idlePowerOffShutdown();
     }
   }
-  delay(mapNow ? 1 : 10);
+  delay((mapNow || page == 4) ? 1 : 10);
 }
