@@ -48,15 +48,13 @@ import androidx.appcompat.app.AppCompatActivity
  *          显示电子眼原始数据
  *   v1.8  转弯箭头角度跟随路口实际角度（锐角弯、缓弯），配套圆屏固件 v1.8
  *   v1.8.1 距离推算上限从 3 秒缩短到 1.2 秒，急刹停车时距离更准
- *   v2.0  小地图：下载附近 OpenStreetMap 道路/绿地/水面和导航路线发给圆屏，
  *         圆屏画成车头朝上的小地图（配套圆屏固件 v2.0）；可在这里关闭
  *   v2.0.1 显示圆屏小地图的帧率（配套圆屏固件 v2.2）
  *   v2.1  可切换圆屏数据线速度 40/60/80MHz，减轻画面撕裂（配套圆屏固件 v2.3）
  *   v2.2  测速提醒提前：按车速留约 20 秒（500~1000 米）；配套圆屏固件 v2.4（远处先显示直行）
- *   v2.3  接入天地图（图片地图，国内数据全）；地图来源可选 自动/天地图/OpenStreetMap；
- *         显示天地图原图和归类后的预览；坐标原点固定（配套圆屏固件 v2.5）
- *   v2.3.1 修复天地图返回“权限类型错误”（请求里去掉浏览器标识）
- *   v2.3.2 天地图画面更干净：不再把深色细线当道路，去掉小碎块，边缘平滑
+ *         显示高德原图和归类后的预览；坐标原点固定（配套圆屏固件 v2.5）
+ *   v2.3.1 修复高德返回“权限类型错误”（请求里去掉浏览器标识）
+ *   v2.3.2 高德画面更干净：不再把深色细线当道路，去掉小碎块，边缘平滑
  *   v2.4  圆屏“快速刷屏”开关；帧率统计显示更详细（配套圆屏固件 v2.6）
  *   v2.5  小地图配色主题：罪恶都市 / GTA5 / 原版（配套圆屏固件 v2.9）
  *   v2.6  界面重新设计：罪恶都市风深色界面（霓虹粉 + 青色），状态卡片、分段选择按钮、
@@ -99,7 +97,6 @@ import androidx.appcompat.app.AppCompatActivity
  *         选路线页可以加最多 3 个途经点（配合固件 v5.0）
  *   v5.0  来电显示：来电时圆屏整屏显示名字和号码，接听或挂断后回到地图（小地图设置里的开关，配合固件 v5.1）
  *   v5.1  播报时压低音乐：像车机一样，导航播报时音乐自动变小（或暂停），播完恢复（导航语音卡片里选）
- *   v5.2  高德、天地图的 key 统一放到项目根目录的 local.properties（amap.key / tianditu.key），代码里不再写死
  *   v5.3  圆屏触屏接电话：来电时按住圆屏 0.8 秒接听（配合固件 v5.2，需要“接听电话”权限）
  *   v5.4  圆屏天气页：在圆屏上左右滑看天气（高德天气，用导航的 key；配合固件 v5.3）
  *   v5.5  修复：滑到天气页 App 闪退（图片栏编号超出）；新增闪退记录，下次打开在调试信息最上面显示
@@ -108,12 +105,12 @@ import androidx.appcompat.app.AppCompatActivity
  *   v5.8  调试信息里显示小地图每一步各花多少毫秒（配合固件 v5.8）
  *   v5.9  小地图新增 8 种风格（赛博霓虹、复古纸地图、极简黑白、蓝图、掌机像素、雷达、寻宝罗盘、卫星图）
  *         和“弯道急缓上色”开关（配合固件 v6.1）
- *   v5.9.1 卫星图风格不再受“地图来源”影响，选了就用天地图卫星照片
+ *   v5.9.1 卫星图风格不再受“地图来源”影响，选了就用高德卫星照片
  *   v6.0  风格选择改成全屏卡片：每种风格一张圆屏效果预览图（res/drawable-nodpi/theme_0~10.png），
  *         点一下就换，当前用的那张粉色描边；设置里“风格”一行也显示当前风格的小预览
  *   v6.1  圆屏方向：整个画面转 0°/90°/180°/270°，装车时线朝哪边都行（配合固件 v6.2）；
  *         修复弯道上色开关不起作用（改用 "#Q"）
- *   v6.2  高德 key、天地图 key 改成在 App 里填（首页「Key 设置」，第一次打开自动弹出），保存在手机上；
+ *   v6.2  高德 key 改成在 App 里填（首页「Key 设置」，第一次打开自动弹出），保存在手机上；
  *         地图、定位、搜索、导航都用自己填的高德 key。local.properties 不填也能编译（填了就当默认值）。
  *         填 key 的页面直接显示本 App 的包名和 SHA1，点一下复制，方便去高德控制台申请 Android key
  *   v6.3  和 iOS 版一样：搜索目的地直接放在首页（搜索框 + 结果 + 粘贴高德分享路线 + 最近去过），
@@ -121,7 +118,6 @@ import androidx.appcompat.app.AppCompatActivity
  *         圆屏方向改成圆盘：按住转动，任意角度，圆屏实时跟着转（配合固件 v6.4 的 "#D角度"；旧固件转到最近的 90°）
  *   v6.4  蓝牙配对验证（配合固件 v6.5）：第一次连接时输入圆屏上的 6 位配对码，之后自动连、全程加密，
  *         别人的手机发不了指令；首页圆屏状态显示配对提示 / “已验证”；圆屏设置里可以“全部忘掉”配对
- *   v6.5  去掉内置的高德、天地图 key（local.properties 里的不再用）：只用 App 里填的；
  *         第一次打开、或打开 App 时还有 key 没填，自动弹出填写页
  *   v6.6  修：有的手机（小米等）上播报时音乐压不住——音乐 App 不理会系统的“压低”请求。
  *         “暂停”模式下，打开「通知使用权」后直接对正在放的音乐按暂停，播完自动接着放；界面上给出提示和设置入口
@@ -150,7 +146,7 @@ import androidx.appcompat.app.AppCompatActivity
  *         设置分成「圆屏显示 / 导航语音 / 圆屏设置 / 地图 Key」四组，可折叠，收起时显示一行当前设置；
  *         调试信息、测试按钮、屏幕速度、地图来源、帧率等挪进「开发者选项」，默认隐藏（连点 5 下版本号打开）
  */
-const val APP_VERSION = "v8.3.21"
+const val APP_VERSION = "v8.3.23-webmotor.4"
 
 class MainActivity : AppCompatActivity() {
     // ---------------- 配色（罪恶都市夜景：深紫黑底、霓虹粉、青色） ----------------
@@ -190,44 +186,7 @@ class MainActivity : AppCompatActivity() {
         window.navigationBarColor = BG
         supportActionBar?.hide()                       // 不要系统自带的标题栏
 
-        val root = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(dp(16), dp(20), dp(16), dp(28))
-        }
-
-        // v8.2 首页：状态 → 去哪儿 → 巡航 → 设置（每组可以折叠，平时只看一行摘要）→ 开发者选项（默认隐藏）
-        root.addView(header())
-        root.addView(setupCard())
-        root.addView(statusCard())
-        root.addView(searchCard())                     // v6.3 搜索目的地直接放在首页
-        root.addView(cruiseCard())
-        root.addView(rideCard())
-        root.addView(sectionTitle("设置"))
-        root.addView(section("map", "🗺", "圆屏显示", { mapSummary() }) { mapSection(it) })
-        root.addView(section("voice", "🔊", "导航语音", { voiceSummary() }) { voiceSection(it) })   // v3.8
-        root.addView(section("screen", "⌚", "圆屏设置", { screenSummary() }) { screenSection(it) })
-        root.addView(section("key", "🔑", "地图 Key", { keySummary() }, forceOpen = !Keys.allFilled(this)) { keySection(it) })   // v6.2
-        devWrap = section("dev", "🛠", "开发者选项", { "调试信息、测试按钮、屏幕速度、地图来源" }) { devSection(it) }.apply {
-            visibility = if (uiPrefs.getBoolean("dev_mode", false)) View.VISIBLE else View.GONE
-        }
-        root.addView(devWrap)
-        root.addView(exitButton())
-
-        setContentView(ScrollView(this).apply {
-            setBackgroundColor(BG)
-            isFillViewport = true
-            addView(root)
-            // v3.6 新版安卓页面会延伸到状态栏和底部导航条后面：按它们的高度留出空白，滚动时内容不会钻到状态栏下面
-            clipToPadding = true
-            setOnApplyWindowInsetsListener { v, ins ->
-                @Suppress("DEPRECATION")
-                val top = if (Build.VERSION.SDK_INT >= 30) ins.getInsets(android.view.WindowInsets.Type.systemBars()).top else ins.systemWindowInsetTop
-                @Suppress("DEPRECATION")
-                val bottom = if (Build.VERSION.SDK_INT >= 30) ins.getInsets(android.view.WindowInsets.Type.systemBars()).bottom else ins.systemWindowInsetBottom
-                v.setPadding(0, top, 0, bottom)
-                ins
-            }
-        })
+        buildMainPages(savedInstanceState)
 
         // 权限已经给过：打开 App 就自动启动后台服务并连接圆屏
         if (hasPermissions()) NavService.start(this)
@@ -240,6 +199,114 @@ class MainActivity : AppCompatActivity() {
         // v6.5 打开 App 时还有 key 没填（第一次打开时两个都没填）：直接弹出填写页
         if (savedInstanceState == null && !Keys.allFilled(this)) handler.post { showKeyDialog(first = true) }
     }
+
+    private lateinit var mainPages: MainPagesShell
+    private val pageRefreshers = Array(5) { ArrayList<() -> Unit>() }
+
+    private fun buildMainPages(saved: Bundle?) {
+        mainPages = MainPagesShell(this, saved, { index -> buildMainPage(index) }) { index ->
+            hideKeyboard()
+            pageRefreshers[index].forEach { it() }
+            if (index == 0 && searchInput?.text.isNullOrBlank()) refreshHomeIdle?.invoke()
+        }
+        setContentView(mainPages)
+        mainPages.showPage(saved?.getInt("main_page_selected", 0) ?: 0)
+        onBackPressedDispatcher.addCallback(this, object : androidx.activity.OnBackPressedCallback(true) {
+            override fun handleOnBackPressed() {
+                if (mainPages.selectedPage != 0) mainPages.showPage(0)
+                else { isEnabled = false; onBackPressedDispatcher.onBackPressed(); isEnabled = true }
+            }
+        })
+    }
+
+    /** Build each page once so switching tabs keeps search results, controls and scroll position. */
+    private fun buildMainPage(index: Int): View {
+        val firstCallback = refreshers.size
+        val content = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(16), dp(12), dp(16), dp(20))
+        }
+        val titles = listOf("首页搜索", "圆屏显示", "导航语音", "圆屏设置", "地图 Key")
+        content.addView(pageHeader(if (index == 0) "MotoNav" else titles[index]))
+        fun settingsBody(build: (LinearLayout) -> Unit) {
+            val box = card(); build(box); content.addView(wrapMargin(box))
+        }
+        when (index) {
+            0 -> {
+                content.addView(cruiseCard())
+                content.addView(homeConnection())
+                content.addView(searchCard())
+                content.addView(setupCard())
+                content.addView(rideCard())
+            }
+            1 -> {
+                val summary = label("", 13f, SUB).apply { setPadding(dp(4), 0, 0, dp(14)) }
+                content.addView(summary); refreshers += { summary.text = mapSummary() }
+                settingsBody { mapSection(it) }
+            }
+            2 -> {
+                val summary = label("", 13f, SUB).apply { setPadding(dp(4), 0, 0, dp(14)) }
+                content.addView(summary); refreshers += { summary.text = voiceSummary() }
+                settingsBody { voiceSection(it) }
+            }
+            3 -> {
+                content.addView(statusCard())
+                settingsBody { screenSection(it) }
+                devWrap = section("dev", "🛠", "开发者选项", { "调试信息、测试按钮、屏幕速度、地图来源" }) { devSection(it) }.apply {
+                    visibility = if (uiPrefs.getBoolean("dev_mode", false)) View.VISIBLE else View.GONE
+                }
+                content.addView(devWrap)
+                content.addView(exitButton())
+            }
+            4 -> settingsBody { keySection(it) }
+        }
+        val callbacks = refreshers.subList(firstCallback, refreshers.size)
+        pageRefreshers[index].addAll(callbacks.toList()); callbacks.clear()
+        return content
+    }
+
+    private fun pageHeader(title: String): View = LinearLayout(this).apply {
+        orientation = LinearLayout.VERTICAL
+        setPadding(dp(4), dp(2), dp(4), dp(12))
+        addView(label(title, 25f, if (title == "MotoNav") PINK else TEXT, bold = true).apply {
+            if (title == "MotoNav") {
+                typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD_ITALIC)
+                setShadowLayer(dpf(7f), 0f, 0f, CYAN)
+            }
+        })
+        addView(label((if (packageName.endsWith(".fresh")) "新签名版" else "网页摩托实验") + " · $APP_VERSION", 11f, SUB).apply {
+            setPadding(0, dp(3), 0, 0); setOnClickListener { onVersionTap() }
+        })
+    }
+
+    private fun homeConnection(): View {
+        val row = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(4), 0, dp(4), dp(10)); minimumHeight = dp(40)
+        }
+        val dot = View(this).apply {
+            background = GradientDrawable().apply { shape = GradientDrawable.OVAL; setColor(SUB) }
+        }
+        row.addView(dot, LinearLayout.LayoutParams(dp(7), dp(7)).apply { rightMargin = dp(8) })
+        val state = label("", 12f, SUB).apply { isSingleLine = true; ellipsize = android.text.TextUtils.TruncateAt.END }
+        row.addView(state, LinearLayout.LayoutParams(0, -2, 1f))
+        row.addView(label("圆屏设置 ›", 12f, CYAN))
+        row.setOnClickListener { mainPages.showPage(3) }
+        refreshers += {
+            val ready = BleLink.isConnected && BleLink.verified
+            setDot(dot, if (ready) GREEN else AMBER)
+            state.text = if (ready) BleLink.screenName.ifBlank { "圆屏" } + " 已连接" +
+                (if (BleLink.screenBatteryPct >= 0) " · ${BleLink.screenBatteryPct}%" else "")
+                else if (BleLink.isConnected) "圆屏正在验证配对" else "圆屏未连接"
+        }
+        return row
+    }
+
+    override fun onSaveInstanceState(outState: Bundle) {
+        if (::mainPages.isInitialized) mainPages.save(outState)
+        super.onSaveInstanceState(outState)
+    }
+
 
     // ================= 页面各部分 =================
 
@@ -292,6 +359,13 @@ class MainActivity : AppCompatActivity() {
     /** 去哪儿：搜索框 + 搜索按钮，下面是搜索结果；没输入时显示“粘贴高德分享的路线”和“最近去过” */
     private fun searchCard(): View {
         val card = card()
+        card.addView(label("网页摩托车规划（实验）", 18f, CYAN, bold = true).apply {
+            minHeight = dp(52); gravity = Gravity.CENTER_VERTICAL
+            setOnClickListener { startActivity(Intent(this@MainActivity, MotorWebActivity::class.java)) }
+        })
+        card.addView(label("内嵌高德网页选起终点 → 读取摩托路线 → 模拟或真实导航", 12f, SUB).apply {
+            setPadding(0, 0, 0, dp(12))
+        })
         card.addView(label("去哪儿", 17f, TEXT, bold = true).apply { setPadding(0, 0, 0, dp(12)) })
         val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
         val input = EditText(this).apply {
@@ -496,6 +570,7 @@ class MainActivity : AppCompatActivity() {
                 NaviBridge.stopCruise()
             } else {
                 if (!Keys.hasAmap(this@MainActivity)) { showKeyDialog(first = true); return@pillButton }
+                if (!hasPermissions()) { requestAllPermissions(); return@pillButton }
                 if (!NavService.running) NavService.start(this@MainActivity)
                 val err = NaviBridge.startCruise(this@MainActivity)
                 if (err != null) Toast.makeText(this@MainActivity, "巡航没能开始：$err", Toast.LENGTH_LONG).show()
@@ -841,7 +916,7 @@ class MainActivity : AppCompatActivity() {
         }
         // 标题
         root.addView(label("小地图风格", 22f, TEXT, bold = true))
-        root.addView(label("点一下就换，圆屏马上生效。预览图是圆屏上的实际画法（白天配色）", 12f, SUB).apply {
+        root.addView(label("四种独立风格。下图为示意，原版保留高德默认颜色和标注；圆屏需更新配套固件。", 12f, SUB).apply {
             setPadding(0, dp(4), 0, dp(12))
         })
         // 卡片网格（两列）
@@ -1043,10 +1118,8 @@ class MainActivity : AppCompatActivity() {
     /** v6.2 Key 设置：显示两个 key 填没填，点「填写 / 修改」弹出填写页 */
     private fun keySection(card: LinearLayout) {
         val amapSub = label("", 12f, SUB)
-        val tdtSub = label("", 12f, SUB)
         card.addView(settingRow("高德 key", null, textLink("填写 / 修改") { showKeyDialog(first = false) }, amapSub))
         card.addView(divider())
-        card.addView(settingRow("天地图 key", null, textLink("填写 / 修改") { showKeyDialog(first = false) }, tdtSub))
         card.addView(divider())
         val weatherSub = label("和风天气：实况、逐小时、降水、空气、预警", 12f, SUB)
         card.addView(settingRow("和风天气", null, textLink("配置") { showWeatherConfig() }, weatherSub))
@@ -1056,11 +1129,9 @@ class MainActivity : AppCompatActivity() {
         })
         refreshers += { weatherSub.text = if (Weather.host().isBlank() || Weather.key().isBlank()) "未配置：请填写 API Host 与 API Key" else "已配置 · 仅查看天气时请求，10分钟缓存" }
         refreshers += {
-            val a = Keys.amap(this); val t = Keys.tdt(this)
+            val a = Keys.amap(this)
             amapSub.text = Keys.mask(a) + (if (a.isEmpty()) "：导航、搜索、定位都用不了" else if (a != Keys.appliedAmap) "（重启 App 后生效）" else "") +
-                "\n导航、搜索、定位、小地图线条用它"
-            tdtSub.text = Keys.mask(t) + (if (t.isEmpty()) "：小地图只能用 OpenStreetMap" else "") + "\n小地图底图和卫星图用它"
-            tdtSub.setTextColor(if (t.isEmpty()) AMBER else SUB)
+                "\n导航、搜索、定位、普通底图和卫星图用它"
             amapSub.setTextColor(if (a.isEmpty()) RED else SUB)
         }
     }
@@ -1090,8 +1161,8 @@ class MainActivity : AppCompatActivity() {
         dialog.show()
     }
     private fun keySummary(): String {
-        val a = Keys.hasAmap(this); val t = Keys.hasTdt(this)
-        return "高德 " + (if (a) "已填" else "没填") + " · 天地图 " + (if (t) "已填" else "没填")
+        val a = Keys.hasAmap(this)
+        return "高德 " + (if (a) "已填" else "没填")
     }
 
     // ================= v8.2 开发者选项（连点 5 下标题下面的版本号打开 / 隐藏） =================
@@ -1109,7 +1180,8 @@ class MainActivity : AppCompatActivity() {
         val on = !uiPrefs.getBoolean("dev_mode", false)
         uiPrefs.edit().putBoolean("dev_mode", on).apply()
         devWrap?.visibility = if (on) View.VISIBLE else View.GONE
-        toast(if (on) "已打开开发者选项（在页面最下面）" else "已隐藏开发者选项")
+        if (on) mainPages.showPage(3)
+        toast(if (on) "已打开开发者选项（圆屏设置页底部）" else "已隐藏开发者选项")
     }
 
     /** 开发者选项：地图来源、屏幕速度、测试按钮、各种状态和原始数据 */
@@ -1125,9 +1197,8 @@ class MainActivity : AppCompatActivity() {
             }
         }
         card.addView(subhead("地图来源"))
-        card.addView(segmented(listOf(MapFeeder.SRC_AMAP to "高德试用", MapFeeder.SRC_AUTO to "自动", MapFeeder.SRC_TDT to "天地图", MapFeeder.SRC_OSM to "OSM"),
-            { MapFeeder.source }) { MapFeeder.setSource(it) })
-        card.addView(note("高德底图支持后台服务息屏取图；出发前准备好沿线离线地图，可减少途中等待。可随时选回天地图。"))
+        card.addView(label("地图来源：高德（普通底图和卫星图）", 13f, SUB))
+        card.addView(note("高德底图支持后台服务息屏取图；出发前准备好沿线离线地图，可减少途中等待。可随时选回高德。"))
         card.addView(settingRow("俯视楼块（实验）", "高德建筑轮廓；需要楼块实验固件，取图未完成时继续显示普通底图",
             toggle({MapFeeder.buildingEnabled}){MapFeeder.setBuildingEnabled(it)}))
         card.addView(pillButton("显示 / 隐藏高德取图预览", STROKE) { AmapCaptureHost.togglePreview() },
@@ -1149,7 +1220,7 @@ class MainActivity : AppCompatActivity() {
             LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(40)).apply { bottomMargin = dp(10) })
         val info = label("", 12f, SUB).apply { setLineSpacing(0f, 1.15f); setTextIsSelectable(true) }
         card.addView(info)
-        // 天地图预览：左 = 原图，右 = 归类上色后
+        // 高德预览：左 = 原图，右 = 归类上色后
         val pvRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; setPadding(0, dp(10), 0, 0) }
         pvRaw = ImageView(this).apply { adjustViewBounds = true }
         pvCls = ImageView(this).apply { adjustViewBounds = true }
@@ -1205,9 +1276,9 @@ class MainActivity : AppCompatActivity() {
             typeface = Typeface.MONOSPACE
         }
         if (first) {
-            val missing = listOfNotNull(if (!Keys.hasAmap(this)) "高德 key" else null, if (!Keys.hasTdt(this)) "天地图 key" else null)
+            val missing = listOfNotNull(if (!Keys.hasAmap(this)) "高德 key" else null)
             box.addView(label("App 里不带任何 key，要填你自己申请的（都是免费的）。还没填：${missing.joinToString("、")}。" +
-                "填好以后可以在首页「地图 Key」里改。", 13f, TEXT).apply { setPadding(0, 0, 0, dp(10)) })
+                "填好以后可以在底部「地图 Key」页面里改。", 13f, TEXT).apply { setPadding(0, 0, 0, dp(10)) })
         }
 
         box.addView(label("高德 key（必填）", 15f, TEXT, bold = true))
@@ -1222,20 +1293,13 @@ class MainActivity : AppCompatActivity() {
         val amapIn = input("粘贴高德 key", Keys.userAmap(this))
         box.addView(amapIn, lpMatch(top = 6, bottom = 14))
 
-        box.addView(label("天地图 key（小地图的天地图底图、卫星图用）", 15f, TEXT, bold = true))
-        box.addView(label("天地图 console.tianditu.gov.cn → 应用管理 → 创建新应用，应用类型选「服务端」，复制 key", 12f, SUB).apply { setPadding(0, dp(4), 0, dp(2)) })
-        val tdtIn = input("粘贴天地图 key", Keys.userTdt(this))
-        box.addView(tdtIn, lpMatch(top = 6, bottom = 6))
-
-
         android.app.AlertDialog.Builder(this, android.app.AlertDialog.THEME_DEVICE_DEFAULT_DARK)
             .setTitle(if (first) "填写地图 key" else "Key 设置")
             .setView(ScrollView(this).apply { addView(box) })
             .setNegativeButton(if (first) "稍后再填" else "取消", null)
             .setPositiveButton("保存") { _, _ ->
                 val a = amapIn.text.toString().filterNot { it.isWhitespace() }
-                val t = tdtIn.text.toString().filterNot { it.isWhitespace() }
-                val needRestart = Keys.save(this, a, t)
+                val needRestart = Keys.save(this, a)
                 MapFeeder.onKeysChanged()
                 if (needRestart && Keys.hasAmap(this)) {
                     android.app.AlertDialog.Builder(this, android.app.AlertDialog.THEME_DEVICE_DEFAULT_DARK)
@@ -1437,7 +1501,8 @@ class MainActivity : AppCompatActivity() {
 
     private fun refresh() {
         for (r in refreshers) r()
-        if (::pvRaw.isInitialized && MapFeeder.previewVer != shownPv) {
+        if (::mainPages.isInitialized) pageRefreshers[mainPages.selectedPage].forEach { it() }
+        if (::pvRaw.isInitialized && pvRaw.isShown && MapFeeder.previewVer != shownPv) {
             shownPv = MapFeeder.previewVer
             MapFeeder.previewRaw?.let { pvRaw.setImageBitmap(it) }
             MapFeeder.previewCls?.let { pvCls.setImageBitmap(it) }

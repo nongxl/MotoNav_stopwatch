@@ -10,18 +10,15 @@ import java.security.MessageDigest
 /**
  * 版本：跟随 App 版本，见 MainActivity.kt 里的 APP_VERSION（v6.2 新增；v6.5 去掉内置 key，只用 App 里填的）
  *
- * 高德 key、天地图 key 在 App 里填写（保存在手机上），App 里不带任何内置 key。
+ * 高德 key 在 App 里填写（保存在手机上），App 里不带任何内置 key。
  * - 第一次打开、或打开时还有 key 没填，自动弹出填写页
  * - 高德 key 在 App 启动时交给高德各个 SDK（地图、定位、搜索、导航），所以改了高德 key 要重启 App 才生效
- * - 天地图 key 每次取底图时现读，改了马上生效
  *
  * 别人用这个 App：在高德开放平台建一个“Android 平台”的 key，填这个 App 的包名和 SHA1（App 的 key 设置页里能直接复制），
- * 再在天地图控制台建一个 key，然后在 App 里填进去就行。
  */
 object Keys {
     private const val PREFS = "keys"
     private const val K_AMAP = "amap"
-    private const val K_TDT = "tdt"
 
     /** 启动时实际交给高德 SDK 的 key（用来判断改了之后要不要重启） */
     @Volatile var appliedAmap = ""
@@ -34,16 +31,13 @@ object Keys {
 
     /** App 里填的高德 key（没填返回空） */
     fun userAmap(c: Context) = prefs(c).getString(K_AMAP, "").orEmpty().trim()
-    fun userTdt(c: Context) = prefs(c).getString(K_TDT, "").orEmpty().trim()
 
     /** 实际使用的 key：只有 App 里填的（v6.5 起不再有内置 key） */
     fun amap(c: Context) = userAmap(c)
-    fun tdt(c: Context) = userTdt(c)
 
     fun hasAmap(c: Context) = amap(c).isNotEmpty()
-    fun hasTdt(c: Context) = tdt(c).isNotEmpty()
-    /** 两个 key 都填了 */
-    fun allFilled(c: Context) = hasAmap(c) && hasTdt(c)
+    /** 地图服务配置完成 */
+    fun allFilled(c: Context) = hasAmap(c)
 
     /** 界面上显示用：只露出头尾几位 */
     fun mask(k: String) = when {
@@ -53,8 +47,8 @@ object Keys {
     }
 
     /** 保存。返回 true 表示高德 key 变了、需要重启 App 才生效 */
-    fun save(c: Context, amapKey: String, tdtKey: String): Boolean {
-        prefs(c).edit().putString(K_AMAP, amapKey.trim()).putString(K_TDT, tdtKey.trim()).apply()
+    fun save(c: Context, amapKey: String): Boolean {
+        prefs(c).edit().putString(K_AMAP, amapKey.trim()).remove("tdt").apply()
         return amap(c) != appliedAmap
     }
 
@@ -63,6 +57,7 @@ object Keys {
      * 用反射调用：哪个 SDK 没有这个方法也不会编译失败或闪退，结果写在 applyInfo 里。
      */
     fun apply(c: Context) {
+        prefs(c).edit().remove("tdt").apply()
         val ctx = c.applicationContext
         val k = amap(ctx)
         appliedAmap = k

@@ -311,7 +311,7 @@ object BleLink {
             if (p.size >= 5) screenMhz = p[4].toIntOrNull() ?: -1
             if (p.size >= 8) screenFast = p[7].toIntOrNull() ?: -1
             val more = if (p.size >= 8) "\n其中画地图 ${p[5]} 毫秒，画边框和信息 ${p[6]} 毫秒；快速刷屏${if (p[7] == "1") "开" else "关"}" else ""
-            val ras = if (p.size >= 10 && p[8] != "0") "\n画地图里，天地图底图占 ${p[8]} 毫秒（${p[9]} 个核心一起画）" else ""   // v5.7
+            val ras = if (p.size >= 10 && p[8] != "0") "\n画地图里，高德底图占 ${p[8]} 毫秒（${p[9]} 个核心一起画）" else ""   // v5.7
             screenStats = "小地图 ${p[1]} 帧/秒（画一帧 ${p[2]} 毫秒，推到屏幕 ${p[3]} 毫秒$mhz）$more$ras"
             return
         }

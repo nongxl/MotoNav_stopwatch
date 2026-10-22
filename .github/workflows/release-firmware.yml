@@ -17,8 +17,21 @@ jobs:
   tests:
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    outputs:
+      has_payload: ${{ steps.payload.outputs.present }}
     steps:
       - uses: actions/checkout@v4
+      - name: Detect a version-matched binary payload
+        id: payload
+        shell: bash
+        run: |
+          VERSION=$(tr -d '\r\n' < firmware/RELEASE_VERSION)
+          if [ -f "firmware/releases/$VERSION/manifest.json" ]; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "present=false" >> "$GITHUB_OUTPUT"
+            echo "Source-only firmware update: tests run, binary publishing skipped."
+          fi
       - name: Test media, rotation, idle shutdown and flashing rules
         shell: bash
         run: |
@@ -31,6 +44,7 @@ jobs:
           /tmp/motonav-idle
           python3 -m unittest discover -s firmware/tests -p 'test_flash_macos.py'
   release:
+    if: needs.tests.outputs.has_payload == 'true'
     needs: tests
     runs-on: windows-latest
     timeout-minutes: 15

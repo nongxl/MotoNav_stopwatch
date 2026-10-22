@@ -1,6 +1,6 @@
 // v7.8 新增音乐页：导航左滑天气，右滑音乐；音乐左滑返回，上下滑也可查看天气；上一首/播放暂停/下一首，中文歌名和歌手。
 // MotoNav 圆屏固件：蓝牙接收导航指令，显示箭头、距离和各种行车信息
-// 板子：微雪 ESP32-S3-Touch-LCD-1.85B（物理 360x360，逻辑画布 466x466）
+// 板子：微雪 ESP32-S3-Touch-LCD-1.85B（360x360，466x466 逻辑画布）
 // 配套手机 App：v2.0 及以上
 //
 // 版本记录
@@ -207,7 +207,7 @@
 //   #f,1 / #f,0           v2.6 快速刷屏 开 / 关，保存后重启生效
 //   #t,0 / #t,1 / #t,2    v2.9 地图配色：0 原版，1 罪恶都市，2 GTA5（v6.1 增加 3~10，见版本记录）
 //   #Q,1 / #Q,0           v6.2 弯道急缓上色 开 / 关（v6.1 误用了 #q）
-//   #R,0~3                v6.2 圆屏方向：0 / 90 / 180 / 270 度
+//   #R,0~3[,角度]         v7.10.1 兼容四档方向，带第二项时按精确角度旋转
 //   #D角度                v6.4 圆屏方向任意角度 0~359（例 "#D37"；故意不带逗号，旧固件收到会忽略）
 //   #UNPAIR               v6.5 忘掉配对过的手机（v6.6 起保留正在连着的这台）
 //   #L毫秒                v6.7 小地图预判提前量 0~800（例 "#L300"；不带逗号，旧固件会忽略）
@@ -223,6 +223,8 @@
 //   #w,1 / #w,0           v4.9 清爽模式开 / 关
 //   #i,1,号码 / #i,0      v5.1 来电显示开始 / 结束（名字用 'B' 图片栏 2）
 //   #u,起,止,状态,...      v5.0 路况（米，离路线起点）；#y,1/0 重新规划中；#h,分钟 / #h 更快路线；#x,1/0 GPS 弱
+//   #HM,0/1               v7.9 App 音乐控制 / HID 媒体按键（保存到圆屏；互斥）
+//   HID,模式,可发按键        v7.9 HID 就绪状态；CAP,HID,1 能力通知
 //   #Z,有会话,播放中,按钮掩码   v7.8 音乐状态（1=上一首，2=播放暂停，4=下一首）；图片栏 5/6 为歌名/歌手
 // ---------------- 圆屏 → 手机（通知） ----------------
 //   T,M,Q / T,M,P / T,M,T / T,M,N   v7.8 请求音乐状态 / 上一首 / 播放暂停 / 下一首
@@ -230,7 +232,7 @@
 //   U,1                   v6.5 这台手机通过了配对验证（连上后发 3 次）
 //   V,电量,充电,USB,mV    v6.8 圆屏电池（电量 -1 = 没接电池）
 
-#define FW_VERSION "v7.8.11-185B"
+#define FW_VERSION "v7.12.3-185B"
 
 // 调试时想在串口监视器里看到每条收到的文字指令，把 0 改成 1
 #define DEBUG_SERIAL 0
@@ -251,11 +253,19 @@
 #include "PortScale.h"
 #include "Board185BPanel.h"     // v5.2 触摸屏（SensorLib 库，微雪示例里带的）
 #include <Preferences.h>
+#include <esp_sleep.h>
+#include <esp_system.h>
+#include <driver/rtc_io.h>
+#include "IdlePowerOff.h"
 #include <driver/spi_master.h>
 #include <BLEDevice.h>
 #include <BLEServer.h>
 #include <BLEUtils.h>
 #include <BLE2902.h>
+#include <BLEHIDDevice.h>
+#include "HidMediaKeys.h"
+#include "AppleMediaClient.h"
+#include "ScreenRotationCommand.h"
 #include <BLESecurity.h>       // v6.5 配对验证
 #include <miniz.h>            // 罪恶都市轮廓：仅接收地图时解压
 #include "BootAnimation.h"
@@ -363,6 +373,8 @@ int laneN = 0;                // 车道数，0 表示不显示
 // v3.1 小地图底部的行程信息（"#e,剩余米,到达时间HHMM,红绿灯数"）和前方红绿灯（"#g,距离"）
 bool tripOn = false;
 bool cruiseOn = false;        // v4.8 巡航模式（没有目的地，只显示地图、车速、电子眼、安全提示）
+IdlePowerOffTimer idlePowerOffTimer = {0, false};
+volatile bool powerOffPending = false;
 bool cleanOn = false;         // v4.9 清爽模式：地图照常，去掉红绿灯、电子眼、安全提示、测速牌和行程信息（"#w,1/0"）
 int tripRemainM = 0, tripEta = 0, tripLights = 0;
 // v7.3 路程进度
@@ -387,7 +399,7 @@ float mapCamLockH[MCAM_MAX];  // v4.0 放图标时的地图朝向：之后固定
 uint8_t laneBg[8], laneFr[8]; // 每条车道的背景方向码、推荐方向码（0xF = 不推荐）
 
 // ===== 文字图片（手机渲染好的 4 位灰度图）=====
-#define IMG_SLOTS 12           // 0 = 路名，1 = 底部信息，2 = 来电人名字，3/4 = 天气地名和风湿度，5/6 = 音乐歌名和歌手
+#define IMG_SLOTS 13           // 0 = 路名，1 = 底部信息，2 = 来电人名字，3/4 = 天气地名和风湿度，5/6 = 音乐歌名和歌手
 #define IMG_MAX   8192        // 每张图最多字节数
 struct TextImg {
   uint8_t *show;              // 正在显示的图
@@ -396,11 +408,31 @@ struct TextImg {
   int recvId; uint16_t recvW; uint8_t recvH; uint8_t recvParts; uint32_t recvMask;
 };
 TextImg imgs[IMG_SLOTS];
+AppleMediaClient appleMedia;
+volatile uint32_t mediaConnectionEpoch = 0;
+uint32_t lyricImageGeneration = 0; uint16_t lyricImageTitleRevision = 0, lyricImageArtistRevision = 0;
+bool musicLyrics = false;                  // #ML,0/1; never persist an enabled default
 bool musicDirty = true;
 bool musicHave = false, musicPlaying = false;
 int musicActions = 0;
 int musicPressed = -1, musicAck = 0;
 unsigned long musicAckUntil = 0;
+// HID adds a second GATT service to the existing authenticated navigation connection.
+bool hidMusicMode = false;                  // persisted by #HM,0/1; Android explicitly selects 0
+BLEHIDDevice *mediaHid = nullptr;
+BLECharacteristic *mediaInput = nullptr;
+volatile bool hidSubscribed = false, hidSuspended = false, hidReportMode = true;
+volatile uint16_t hidSubscriber = 0xFFFF;
+volatile bool hidNotifyAccepted = false;
+volatile uint32_t hidSessionEpoch = 0;
+uint32_t hidSeenEpoch = 0;
+bool hidReadyShown = false, hidReleaseOnReady = true;
+String pendingHidStatus, pendingLyricsStatus, pendingMediaStatus;
+unsigned long hidInitialReleaseAt = 0;
+HidMediaKeys::Pulses hidPulses;
+unsigned long hidTapAt = 0;
+void hidMediaTick();
+bool hidMediaReady();
 bool wxDirty = false;                 // v5.3 天气页要重画
 
 // ================= v6.5 蓝牙配对验证 =================
@@ -442,10 +474,104 @@ class SecCB : public BLESecurityCallbacks {
 #endif
 };
 
+class HidInputCB : public BLECharacteristicCallbacks {
+public:
+#if defined(CONFIG_NIMBLE_ENABLED)
+  void onSubscribe(BLECharacteristic *, ble_gap_conn_desc *desc, uint16_t value) override {
+    hidSubscriber = desc ? desc->conn_handle : 0xFFFF;
+    hidSubscribed = (value & 1) != 0; ++hidSessionEpoch;
+  }
+#endif
+  void onStatus(BLECharacteristic *, Status status, uint32_t) override {
+    hidNotifyAccepted = status == SUCCESS_NOTIFY;
+  }
+};
+class HidControlCB : public BLECharacteristicCallbacks {
+public:
+  void onWrite(BLECharacteristic *c) override {
+    if (c->getLength() == 1 && c->getData()[0] <= 1) { hidSuspended = c->getData()[0] == 0; ++hidSessionEpoch; }
+  }
+};
+class HidProtocolCB : public BLECharacteristicCallbacks {
+public:
+  void onWrite(BLECharacteristic *c) override {
+    if (c->getLength() == 1 && c->getData()[0] <= 1) { hidReportMode = c->getData()[0] == 1; ++hidSessionEpoch; }
+  }
+};
+// Gate every report on this connection's pairing, host subscription and report mode.
+bool hidMediaLinkReady() {
+  return mediaInput && bleConnected && bleAuthed && hidSubscribed &&
+         hidSubscriber == bleConnHandle && !hidSuspended && hidReportMode;
+}
+bool hidMediaReady() { return hidMediaLinkReady() && !hidReleaseOnReady && hidSeenEpoch == hidSessionEpoch; }
+bool hidMediaNotify(uint16_t usage) {
+  if (!hidMediaLinkReady()) return false;
+  uint8_t report[2]; HidMediaKeys::encode(usage, report);
+  hidNotifyAccepted = false;
+  mediaInput->setValue(report, sizeof(report)); mediaInput->notify();
+  return hidNotifyAccepted; // queued by BLE stack; does not confirm player state
+}
+void hidMediaTick() {
+  static bool resetWritten = false;
+  uint32_t epoch = hidSessionEpoch;
+  if (hidSeenEpoch != epoch) {
+    hidPulses.reset(); hidReleaseOnReady = true; resetWritten = false; hidSeenEpoch = epoch;
+  }
+  bool linkReady = hidMediaLinkReady();
+  if (!linkReady) {
+    if (!resetWritten) {
+      hidPulses.reset(); hidReleaseOnReady = true;
+      if (mediaInput) { const uint8_t zero[2] = {0, 0}; mediaInput->setValue(zero, sizeof(zero)); }
+      resetWritten = true;
+    }
+  } else if (hidReleaseOnReady) {
+    resetWritten = false;
+    if (!hidInitialReleaseAt || millis() - hidInitialReleaseAt >= 50) {
+      hidInitialReleaseAt = millis();
+      if (hidMediaNotify(0)) hidReleaseOnReady = false;
+    }
+  } else {
+    if (!hidMusicMode) hidPulses.cancelQueued();
+    HidMediaKeys::Pulses::Report report;
+    if (hidPulses.poll(millis(), report)) {
+      bool sent = hidMediaNotify(report.usage);
+      hidPulses.submitted(report, millis(), sent);
+      if (!report.release || !sent) {
+        musicAck = sent ? 6 : 8; musicAckUntil = millis() + 2500; musicDirty = true;
+      }
+    }
+  }
+  bool ready = hidMediaReady();
+  static int lastMode = -1;
+  if (ready != hidReadyShown || lastMode != (int)hidMusicMode) {
+    hidReadyShown = ready; lastMode = hidMusicMode;
+    pendingHidStatus = String("HID,") + (hidMusicMode ? 1 : 0) + "," + (ready ? 1 : 0);
+    Serial.printf("MEDIA HID ready=%d auth=%d sub=%d suspended=%d report=%d release=%d\n", ready, (bool)bleAuthed, (bool)hidSubscribed, (bool)hidSuspended, (bool)hidReportMode, hidReleaseOnReady);
+    musicDirty = true;
+  }
+}
+void initMediaHid(BLEServer *server) {
+  mediaHid = new BLEHIDDevice(server);
+  mediaHid->manufacturer()->setValue("MotoNav");
+  // DIY/private device identity, not a borrowed keyboard vendor/product ID.
+  const uint8_t identity[7] = {0x01, 0xFF, 0xFF, 0x01, 0x00, 0x00, 0x01};
+  mediaHid->deviceInfo()->getCharacteristic(BLEUUID((uint16_t)0x2A50))->setValue(identity, sizeof(identity));
+  mediaHid->hidInfo(0, 0x02); // Normally Connectable, no remote wake claim
+  mediaHid->reportMap(const_cast<uint8_t *>(HidMediaKeys::REPORT_MAP), sizeof(HidMediaKeys::REPORT_MAP));
+  mediaInput = mediaHid->inputReport(HidMediaKeys::REPORT_ID);
+  mediaInput->setCallbacks(new HidInputCB());
+  const uint8_t zero[2] = {0, 0}; mediaInput->setValue(zero, sizeof(zero));
+  mediaHid->hidControl()->setCallbacks(new HidControlCB());
+  mediaHid->protocolMode()->setCallbacks(new HidProtocolCB());
+  mediaHid->setBatteryLevel(100); // updated from the existing fuel gauge in the loop
+  mediaHid->startServices();
+}
+
 class ServerCB : public BLEServerCallbacks {
   void onConnect(BLEServer *s) {
-    bleConnected = true;
+    bleConnected = true; ++mediaConnectionEpoch;
     bleAuthed = false;
+    hidSubscribed = false; hidSubscriber = 0xFFFF; hidSuspended = false; hidReportMode = true; ++hidSessionEpoch;
     bleConnAt = millis();
     authNotifies = 0;
   }
@@ -453,10 +579,11 @@ class ServerCB : public BLEServerCallbacks {
   void onConnect(BLEServer *s, ble_gap_conn_desc *desc) { if (desc) bleConnHandle = desc->conn_handle; }
 #endif
   void onDisconnect(BLEServer *s) {
-    bleConnected = false;
+    bleConnected = false; ++mediaConnectionEpoch;
     bleAuthed = false;
     bleConnHandle = 0xFFFF;
-    BLEDevice::startAdvertising();  // 断开后重新广播，方便手机重连
+    hidSubscribed = false; hidSubscriber = 0xFFFF; ++hidSessionEpoch;
+    if (!powerOffPending) BLEDevice::startAdvertising();
   }
 };
 
@@ -472,6 +599,7 @@ void saveAndRestart(const char *key, int val, bool isBool) {
 
 class RxCB : public BLECharacteristicCallbacks {
   void onWrite(BLECharacteristic *c) {
+    if (powerOffPending) return;
     size_t n = c->getLength();
     if (n == 0) return;
     const uint8_t *d0 = c->getData();
@@ -571,7 +699,6 @@ bool fastFlushInit() {
 // v7.7 RGB565 拆成 0x0GGRRBB 形式（绿、红、蓝之间留空），一次乘法就能三个颜色一起按权重混合
 static inline uint32_t rgbSpread(uint16_t c) { return ((uint32_t)c | ((uint32_t)c << 16)) & 0x07E0F81Fu; }
 
-// 1.85B 以物理分辨率传输；整套原界面统一缩放，圆屏方向也在同一步转换。
 void fastPush(const uint16_t *fb) {
   panel->startWrite();panel->writeAddrWindow(0,0,PANEL_WIDTH,PANEL_HEIGHT);panel->endWrite();
   spi_device_acquire_bus(fastDev,portMAX_DELAY);digitalWrite(LCD_CS,LOW);
@@ -1596,9 +1723,11 @@ void handleBitmap(const uint8_t *d, int n) {
     im.showW = 0; im.showH = 0; im.recvId = -1;
     navDirty = true;
     if (slot == 3 || slot == 4) wxDirty = true;
-    if (slot == 5 || slot == 6) musicDirty = true;
+    if (slot == 5 || slot == 6 || slot == 12) musicDirty = true;
     return;
   }
+  if (slot == 12 && (!musicLyrics || !hidMusicMode || !appleMedia.available ||
+      lyricImageGeneration != appleMedia.generation || lyricImageTitleRevision != appleMedia.values[0].revision || lyricImageArtistRevision != appleMedia.values[1].revision)) return;
   int total = ((w + 1) / 2) * h;
   if (total > IMG_MAX || parts > 32) return;
   if (id != im.recvId) {                          // 新的一张图：重新开始接收
@@ -1615,7 +1744,7 @@ void handleBitmap(const uint8_t *d, int n) {
     im.recvId = -1;
     navDirty = true;
     if (slot == 3 || slot == 4) wxDirty = true;
-    if (slot == 5 || slot == 6) musicDirty = true;                // 音乐文字图片收齐后刷新
+    if (slot == 5 || slot == 6 || slot == 12) musicDirty = true;                // 音乐文字图片收齐后刷新
   }
 }
 
@@ -2460,6 +2589,10 @@ void drawWeather() {
   // 风 · 湿度
   drawTextImg(4, 232, 0xC0);
   if (wxHourly) {
+    if (wxN <= 0) {
+      printCentered("HOURLY UNAVAILABLE", CX, 322, 2, C_GREY);
+      printCentered("CHECK PHONE WEATHER DETAILS", CX, 354, 1, C_GREY);
+    }
     // v5.6 接下来几个小时：几点 / 图标 / 温度 / 降雨概率（≥10% 才显示）
     for (int i = 0; i < wxN && i < 6; i++) {
       int x = CX + (int)((i - (wxN - 1) / 2.0f) * 76);
@@ -2511,8 +2644,8 @@ void parseWeather(const String &m) {
 
 // ---- v5.5 跟手换页 ----
 // 触摸坐标和画面方向相反时改成 1（拖动时画面往手指反方向走就是反了）
-#define TOUCH_FLIP_X BOARD_TOUCH_FLIP_X      // v5.5.1 实测左右是反的
-#define TOUCH_FLIP_Y BOARD_TOUCH_FLIP_Y      // 实机坐标确认：上下也反向；点按和手势使用同一校正
+#define TOUCH_FLIP_X 1      // v5.5.1 实测左右是反的
+#define TOUCH_FLIP_Y 1      // 实机坐标确认：上下也反向；点按和手势使用同一校正
 #define DRAG_START  16        // 手指移动超过这么多像素才开始拖
 uint16_t *slideOld = nullptr, *slideNew = nullptr;
 int16_t chordHalf[LCD_HEIGHT];   // 每一行在圆里的半宽（圆外不用算）
@@ -2527,21 +2660,33 @@ void drawMusic() {
   frameIsMap = false;
   printCentered("MUSIC", CX, 65, 4, C_CYAN);
   bool linked = bleConnected && bleAuthed;
-  if (linked) {
+  if (hidMusicMode && linked && !appleMedia.available) {
+    printCentered("PHONE MEDIA KEYS", CX, 158, 2, C_WHITE);
+    printCentered("OPEN MUSIC APP ON PHONE", CX, 210, 2, C_GREY);
+  } else if (linked) {
     drawTextImg(5, 158, 0xFF);
     drawTextImg(6, 210, 0xBB);
   } else printCentered("PHONE OFFLINE", CX, 170, 3, C_GREY);
-  const char *feedback[] = {"", "SENT", "PHONE RECEIVED", "DONE", "NO RESPONSE", "NO PLAYER"};
+  bool showLyrics = linked && hidMusicMode && musicLyrics && appleMedia.available && imgs[12].showW > 0;
+  if (showLyrics) drawTextImg(12, 242, 0xDD);
+  const char *feedback[] = {"", "SENT", "PHONE RECEIVED", "DONE", "NO RESPONSE", "NO PLAYER", "HID SENT", "HID NOT READY", "HID SEND FAILED", "AMS SENT", "AMS SEND FAILED", "AMS QUEUED"};
   String state = linked && musicHave ? (musicPlaying ? "PLAYING" : "PAUSED") : "NO PLAYER";
-  if (musicAck > 0 && musicAck <= 5) state = feedback[musicAck];
-  printCentered(state, CX, 257, 2, musicAck == 4 ? C_ORANGE : C_GREY);
+  if (hidMusicMode) {
+    state = !hidMediaReady() ? (appleMedia.controlMask() ? "AMS MEDIA READY" : "PAIR HID IN PHONE SETTINGS") : !appleMedia.available ? "HID READY / AMS UNAVAILABLE"
+      : !appleMedia.playback.known ? "STATE UNKNOWN" : appleMedia.playback.state == 1 ? "PLAYING" : appleMedia.playback.state == 0 ? "PAUSED" : "SEEKING";
+  }
+  if (musicAck > 0 && musicAck <= 11) state = feedback[musicAck];
+  printCentered(state, CX, showLyrics ? 272 : 257, 2, musicAck == 4 ? C_ORANGE : C_GREY);
   for (int i = 0; i < 3; i++) {
     int x = CX + (i - 1) * 100, y = 335;
-    bool enabled = linked && musicHave;
+    bool enabled = hidMusicMode ? (hidMediaReady() || appleMedia.controlReady(i)) : linked && musicHave;
     uint16_t c = enabled ? C_WHITE : C_GREY;
     aaDisc(x, y, 43, enabled && musicPressed == i ? 0x0470 : enabled ? 0x19A7 : 0x1082);
     if (i == 1) {
-      if (musicPlaying) {
+      if (hidMusicMode && !appleMedia.playback.known) {
+        gfx->fillTriangle(x - 19, y - 15, x - 19, y + 15, x + 1, y, c);
+        gfx->fillRect(x + 7, y - 15, 5, 30, c); gfx->fillRect(x + 16, y - 15, 5, 30, c);
+      } else if (musicPlaying) {
         gfx->fillRect(x - 13, y - 15, 8, 30, c);
         gfx->fillRect(x + 5, y - 15, 8, 30, c);
       } else gfx->fillTriangle(x - 10, y - 17, x - 10, y + 17, x + 17, y, c);
@@ -2551,7 +2696,15 @@ void drawMusic() {
       gfx->fillRect(x + sign * 15 - 3, y - 15, 6, 30, c);
     }
   }
-  printCentered("SWIPE LEFT TO RETURN", CX, 402, 2, C_GREY);
+  if (hidMusicMode && appleMedia.available) {
+    double duration = AppleMediaData::duration(appleMedia.values[3].text.c_str());
+    if (duration > 0 && appleMedia.playback.known) {
+      double elapsed = appleMedia.playback.elapsed + appleMedia.playback.rate * (millis() - appleMedia.playbackAt) / 1000.0;
+      int sec = (int)constrain(elapsed, 0.0, duration), total = (int)duration;
+      char time[32]; snprintf(time, sizeof(time), "%d:%02d / %d:%02d", sec/60, sec%60, total/60, total%60);
+      printCentered(time, CX, 392, 2, C_GREY);
+    }
+  } else printCentered("SWIPE LEFT TO RETURN", CX, 402, 2, C_GREY);
   drawPageDots();
   needFlush = true;
 }
@@ -2796,6 +2949,18 @@ int musicButtonAt(int x, int y) {
 void musicTap(int x, int y) {
   if (dragging || page != 2 || callOn || pairOn || !bleConnected || !bleAuthed) return;
   int button = musicButtonAt(x, y);
+  if (hidMusicMode) {
+    if (button < 0) return;
+    bool hidReady = hidMediaReady();
+    if (!hidReady && !appleMedia.controlReady(button)) { musicAck = 7; musicAckUntil = millis() + 2500; musicDirty = true; return; }
+    if (hidTapAt && millis() - hidTapAt < 120) return;
+    hidTapAt = millis();
+    if (!hidReady) {
+      musicAck = appleMedia.control(button) ? 11 : 10; musicAckUntil = millis() + 2500; musicDirty = true; return;
+    }
+    if (!hidPulses.enqueue(button)) { musicAck = 8; musicAckUntil = millis() + 2500; musicDirty = true; }
+    return; // no T,M,P/T/N: do not also control Apple Music through the App
+  }
   if (button < 0 || !musicHave) {
     pendingEvt = String("T,M,H,") + x + "," + y + "," + button;
     return;
@@ -2872,12 +3037,12 @@ String ringDir = "";
 struct MapTheme { uint16_t block, road, park, water, route, route2, hud, blip, done, done2; };
 #define THEME_N 12
 const MapTheme THEMES[THEME_N] = {
-  {0xDEFB, 0x3186, 0x5DEB, 0x4C9B, 0xA21E, 0x58F1, 0xFFFF, 0xFE80, 0x94B3, 0x5AEC},   // 0 原版
+  {0xDEFB, 0x3186, 0x5DEB, 0x4C9B, 0x249F, 0xFFFF, 0xFFFF, 0xFE80, 0x94B3, 0x5AEC},   // 0 原版
   {0xE6D9, 0x3187, 0x760D, 0x4E3B, 0xF258, 0x78EC, 0x6F5F, 0xF258, 0xA4B4, 0x62CC},   // 1 罪恶都市：暖沙色街区、青绿水面、粉紫路线
   {0x3A08, 0x9D15, 0x4327, 0x2A8F, 0xA2DF, 0x38EC, 0xFFFF, 0xFE87, 0x738F, 0x18E4},   // 2 GTA5：深色地面、浅色道路、紫色路线
   {0x0021, 0x04B6, 0x0103, 0x1847, 0xF815, 0x5007, 0xB7FF, 0xFF20, 0x39EA, 0x10A3},   // 3 赛博霓虹
   {0xEF18, 0xF5CD, 0xC6B3, 0x9E3A, 0xB0A3, 0x5841, 0xFFFF, 0x298F, 0xA490, 0x6B0A},   // 4 复古纸地图
-  {0x0000, 0x39C7, 0x08A1, 0x0863, 0xFFFF, 0x39E7, 0xFFFF, 0xFFFF, 0x528A, 0x2104},   // 5 极简黑白
+  {0x0000, 0x8410, 0x0000, 0x0000, 0xFFFF, 0x39E7, 0xFFFF, 0xFFFF, 0x528A, 0x2104},   // 5 极简黑白
   {0x094B, 0xDF5F, 0x1A50, 0x2B35, 0xFE87, 0x08E8, 0xFFFF, 0xFE87, 0x6C76, 0x116B},   // 6 蓝图
   {0x8E0E, 0xE7DA, 0x334A, 0x08C4, 0x08C4, 0xE7DA, 0xE7DA, 0x08C4, 0x334A, 0x8E0E},   // 7 掌机像素
   {0x00C1, 0x0B46, 0x0183, 0x0084, 0x57F0, 0x01C2, 0x97F5, 0xCFF9, 0x1AC6, 0x0101},   // 8 雷达
@@ -2887,12 +3052,12 @@ const MapTheme THEMES[THEME_N] = {
 };
 // v3.0 夜间配色：地面压暗、道路变成浅色线条，路线保持鲜艳（晚上一眼就能看到）
 const MapTheme THEMES_NIGHT[THEME_N] = {
-  {0x18E5, 0x5B0E, 0x19E5, 0x118B, 0xA21E, 0x2848, 0xFFFF, 0xFE80, 0x4A8B, 0x0862},   // 0 原版·夜：深蓝灰
+  {0xDEFB, 0x3186, 0x5DEB, 0x4C9B, 0x249F, 0xFFFF, 0xFFFF, 0xFE80, 0x4A8B, 0x0862},   // 0 原版·夜：深蓝灰
   {0x20C7, 0x6271, 0x1207, 0x0A2B, 0xF258, 0x5047, 0x6F5F, 0xF258, 0x7370, 0x1063},   // 1 罪恶都市·夜：深紫街区、霓虹粉路线
   {0x10C3, 0x5AED, 0x1163, 0x1107, 0xAB3F, 0x30AB, 0xEF5D, 0xFE87, 0x4229, 0x0841},   // 2 GTA5·夜：更深的地面
   {0x0021, 0x04B6, 0x0103, 0x1847, 0xF815, 0x5007, 0xB7FF, 0xFF20, 0x39EA, 0x10A3},   // 3 赛博霓虹·夜
   {0x0021, 0x04B6, 0x0103, 0x1847, 0xF815, 0x5007, 0xB7FF, 0xFF20, 0x39EA, 0x10A3},   // 4 复古纸地图·夜 = 霓虹
-  {0x0000, 0x39C7, 0x08A1, 0x0863, 0xFFFF, 0x39E7, 0xFFFF, 0xFFFF, 0x528A, 0x2104},   // 5 极简黑白·夜
+  {0x0000, 0x8410, 0x0000, 0x0000, 0xFFFF, 0x39E7, 0xFFFF, 0xFFFF, 0x528A, 0x2104},   // 5 极简黑白·夜
   {0x00C7, 0xAE3D, 0x118B, 0x1A50, 0xFE87, 0x00A5, 0xFFFF, 0xFE87, 0x4B52, 0x08E7},   // 6 蓝图·夜
   {0x334A, 0x8E0E, 0x08C4, 0x08C4, 0xE7DA, 0x08C4, 0xE7DA, 0xE7DA, 0x334A, 0x08C4},   // 7 掌机像素·夜
   {0x00C1, 0x0B46, 0x0183, 0x0084, 0x57F0, 0x01C2, 0x97F5, 0xCFF9, 0x1AC6, 0x0101},   // 8 雷达·夜
@@ -3527,13 +3692,17 @@ void drawRasterMap(float cx, float cy, float sc, float cs, float sn) {
   unsigned long t0 = millis();
   RM.fb = gfx->getFramebuffer();
   if (rasHasPal) {                                     // v6.1 卫星图：用照片自带的颜色（夜间压暗）
-    for (int i = 0; i < 16; i++) RM.pal[i] = nightOn ? blendF(rasPal[i], C_BLACK, 110) : rasPal[i];
+    for (int i = 0; i < 16; i++) RM.pal[i] = (themeIdx != 0 && nightOn) ? blendF(rasPal[i], C_BLACK, 110) : rasPal[i];
   } else {
     for (int i = 0; i < 16; i++) RM.pal[i] = C_BLOCK;
     RM.pal[1] = C_ROADM; RM.pal[2] = C_PARK; RM.pal[3] = C_WATER;
     RM.pal[4] = blendF(C_BLOCK,C_ROADM,64);   // 俯视屋顶
     RM.pal[5] = blendF(C_BLOCK,C_ROADM,112);  // 屋顶轮廓
     RM.pal[6] = RM.pal[4]; RM.pal[7] = RM.pal[5]; // 保留原绿地类别的屋顶
+  }
+  if (styleIdx() == ST_MINIMAL) {
+    for (int i=0;i<16;i++) RM.pal[i]=0x0000;
+    RM.pal[1]=0x8410; // independent monochrome road mask; no building/park/water layer
   }
   RM.pix2 = styleIdx() == ST_PIXEL;
   RM.cx = cx; RM.cy = cy; RM.sc = sc; RM.cs = cs; RM.sn = sn;
@@ -3754,7 +3923,7 @@ void drawGhost(float cx, float cy, float sc, float cs, float sn, float viewR, fl
       float dx = ghostX[k] - cx, dy = ghostY[k] - cy;
       tmpX[m] = CX + sc * (dx * cs - dy * sn); tmpY[m] = MAP_PY - sc * (dx * sn + dy * cs); m++;
     }
-    if (m >= 2) mapPolyline(tmpX, tmpY, m, w, 0xFD20, true);
+    if (m >= 2) mapPolyline(tmpX, tmpY, m, w, styleIdx()==ST_MINIMAL ? 0x8410 : 0xFD20, true);
   }
 }
 
@@ -3822,6 +3991,7 @@ void batPoll() {
   bool usb=chg;
   bool changed = pct != batPct || chg != batChg || usb != usbIn;
   batPct = pct; batChg = chg; usbIn = usb;
+  if (mediaHid && changed && pct >= 0) mediaHid->setBatteryLevel((uint8_t)constrain(pct, 0, 100));
   if (changed) {
     if (onWaitScreen && page == 0 && !sliding) drawStatus();        // v7.2 只重画状态栏
     else if (inNav) navDirty = true;
@@ -3840,6 +4010,20 @@ void sendPendingAck() {
     authNotifies++;
     txChar->setValue((uint8_t *)"U,1", 3);
     txChar->notify();
+    txChar->setValue((uint8_t *)"CAP,HID,1", 9); txChar->notify();
+    txChar->setValue((uint8_t *)"CAP,LYR,1", 9); txChar->notify();
+    pendingHidStatus = String("HID,") + (hidMusicMode ? 1 : 0) + "," + (hidMediaReady() ? 1 : 0);
+    appleMedia.resend();
+    pendingLyricsStatus = String("ML,") + (musicLyrics ? 1 : 0);
+    pendingMediaStatus = String("AMC,") + appleMedia.controlMask();
+  }
+  if (pendingLyricsStatus.length()) { txChar->setValue((uint8_t *)pendingLyricsStatus.c_str(), pendingLyricsStatus.length()); txChar->notify(); pendingLyricsStatus = ""; }
+  if (pendingMediaStatus.length()) { txChar->setValue((uint8_t *)pendingMediaStatus.c_str(), pendingMediaStatus.length()); txChar->notify(); pendingMediaStatus = ""; }
+  uint8_t amsFrame[139]; size_t amsSize = 0;
+  if (appleMedia.nextFrame(amsFrame, amsSize, millis())) { txChar->setValue(amsFrame, amsSize); txChar->notify(); }
+  if (pendingHidStatus.length()) {
+    txChar->setValue((uint8_t *)pendingHidStatus.c_str(), pendingHidStatus.length());
+    txChar->notify(); pendingHidStatus = "";
   }
   if (pendingBootAck.length()) {
     txChar->setValue((uint8_t *)pendingBootAck.c_str(), pendingBootAck.length());
@@ -8488,8 +8672,8 @@ void drawMapFrame() {
     if (split > 0 && trailMode == 1)
       drawRouteRange(0, split, cx, cy, sc, cs, sn, viewR, w0 * 0.8f, w1 * 0.75f, TH.done2, TH.done);
     drawRouteRange(split, (float)(routeN - 1), cx, cy, sc, cs, sn, viewR, w0, w1, C_ROUTE2, C_ROUTE);
-    if (!dragon && curveOn && routeCurv) drawRouteCurved(split, (float)(routeN - 1), cx, cy, sc, cs, sn, viewR, w1);   // v6.1
-    if (!dragon) drawTraffic(cx, cy, sc, cs, sn, viewR, w0, w1, split);                       // v5.0 路况颜色
+    if (!dragon && styleIdx()!=ST_MINIMAL && curveOn && routeCurv) drawRouteCurved(split, (float)(routeN - 1), cx, cy, sc, cs, sn, viewR, w1);   // v6.1
+    if (!dragon && styleIdx()!=ST_MINIMAL) drawTraffic(cx, cy, sc, cs, sn, viewR, w0, w1, split);                       // v5.0 路况颜色
   }
   profMark(2);
   obsN = 0;                                             // v3.8 占位框从头登记
@@ -8504,7 +8688,7 @@ void drawMapFrame() {
   profMark(3);
   {
     int st = styleIdx();                                // v6.1 纸地图、蓝图、掌机像素不压暗边缘
-    if (st != ST_DRAGON && st != ST_PAPER && st != ST_BLUEPRINT && st != ST_PIXEL) drawVignette(178, 211, 150);   // v2.9 雷达边缘渐暗
+    if (st != 0 && st != ST_MINIMAL && st != ST_DRAGON && st != ST_PAPER && st != ST_BLUEPRINT && st != ST_PIXEL) drawVignette(178, 211, 150);   // v2.9 雷达边缘渐暗
   }
   profMark(4);
   if (styleIdx() == ST_COMPASS) drawCompassRose(viewHdg);   // v6.1 罗盘刻度
@@ -8633,6 +8817,8 @@ void drawNavFrame() {
 }
 
 void resetNavState() {
+  if (idlePowerOffNavigationActive(true, inNav, cruiseOn, navDir == "A"))
+    idlePowerOffReset(&idlePowerOffTimer, millis());
   inNav = false;
   tripOn = false; lightDist = -1;                       // v3.1
   mapCamN = 0;                                          // v3.5
@@ -8655,6 +8841,42 @@ int hexVal(char c) {
 
 // 处理文字类消息
 void handleText(const String &m) {
+  if (m.startsWith("#LY,")) {
+    unsigned long gen = 0; unsigned title = 0, artist = 0;
+    if (sscanf(m.c_str(), "#LY,%lu,%u,%u", &gen, &title, &artist) == 3 && gen == appleMedia.generation &&
+        title == appleMedia.values[0].revision && artist == appleMedia.values[1].revision) {
+      lyricImageGeneration = gen; lyricImageTitleRevision = title; lyricImageArtistRevision = artist;
+    } else { lyricImageGeneration = 0; imgs[12].showW = 0; imgs[12].showH = 0; imgs[12].recvId = -1; }
+    return;
+  }
+  if (m == "#ML,0" || m == "#ML,1") {
+    bool wasEnabled = musicLyrics;
+    musicLyrics = m == "#ML,1";
+    if (!musicLyrics) {
+      lyricImageGeneration = 0; imgs[12].showW = 0; imgs[12].showH = 0; imgs[12].recvId = -1; imgs[12].recvMask = 0; imgs[12].recvParts = 0;
+      // Older companion renderers may have put lyrics in the artist bitmap.
+      // Ask for a fresh title/artist once per connection or on an actual OFF transition.
+      static uint32_t refreshedEpoch = 0xffffffff;
+      if (wasEnabled || refreshedEpoch != mediaConnectionEpoch) {
+        refreshedEpoch = mediaConnectionEpoch;
+        imgs[6].showW = 0; imgs[6].showH = 0; imgs[6].recvId = -1; pendingEvt = "T,M,Q";
+      }
+    }
+    pendingLyricsStatus = String("ML,") + (musicLyrics ? 1 : 0);
+    Serial.printf("MEDIA LYRICS enabled=%d\n", musicLyrics);
+    musicDirty = true; return;
+  }
+  if (m == "#HM,0" || m == "#HM,1") {
+    bool enabled = m == "#HM,1";
+    if (enabled != hidMusicMode) {
+      hidMusicMode = enabled; hidPulses.cancelQueued();
+      Preferences pr; pr.begin("motonav", false); pr.putBool("mediahid", enabled); pr.end();
+    }
+    if (!hidMusicMode) { musicLyrics = false; imgs[12].showW = 0; imgs[12].showH = 0; imgs[12].recvId = -1; }
+    musicAck = 0; musicAckUntil = 0; musicDirty = true;
+    pendingHidStatus = String("HID,") + (hidMusicMode ? 1 : 0) + "," + (hidMediaReady() ? 1 : 0);
+    return;
+  }
   // A dedicated command: no navigation state or screen invalidation.
   if (m.startsWith("#BOOT,")) {
     int id = BootAnimation::parse(m.c_str() + 6);
@@ -8672,15 +8894,17 @@ void handleText(const String &m) {
     pendingBootAck = "BOOT," + String(saved ? bootBrand : -1);
     return;
   }
+  if (m == "#AMS?") { appleMedia.resend(); return; }
   if (m == "#GB?") { pendingBuildingCapability=true; return; }
   if (m.startsWith("#ZACK,")) {
+    if (hidMusicMode) return;
     musicAck = constrain(m.substring(6).toInt(), 0, 5);
     musicAckUntil = millis() + 2500; musicDirty = true; return;
   }
   if (m.startsWith("#Z,")) {
     int have = 0, play = 0, actions = 0;
     if (sscanf(m.c_str(), "#Z,%d,%d,%d", &have, &play, &actions) == 3) {
-      musicHave = have != 0; musicPlaying = play != 0; musicActions = actions & 7; musicDirty = true;
+      if (!hidMusicMode) { musicHave = have != 0; musicPlaying = play != 0; musicActions = actions & 7; } musicDirty = true;
     }
     return;
   }
@@ -8767,13 +8991,28 @@ void handleText(const String &m) {
   }
   if (m.startsWith("#t,")) {                             // v2.9 地图配色主题
     int t = m.substring(3).toInt();
-    if (t >= 0 && t < THEME_N) { themeIdx = t; navDirty = true; }   // v7.8.11 0~11
+    if (t >= 0 && t < THEME_N) {
+      // App 8.3.23 adds a third field: each style now owns its map data.
+      // Old Android/iOS #t,t commands keep their legacy recoloring behavior.
+      if (t != themeIdx && m.indexOf(',',3)>=0) {
+        rasterValid=false; rasterBackValid=false; mapValid=false;
+        for(int kind : {1,3}) {
+          Bulk &b=bulks[kind];b.id=-1;b.total=0;b.got=0;b.done=false;
+          memset(b.mask,0,sizeof(b.mask));
+        }
+      }
+      themeIdx = t; navDirty = true;
+    }   // v7.8.11 0~11
     return;
   }
   if (m.startsWith("#Q,")) { curveOn = m.substring(3).toInt() != 0; navDirty = true; return; }   // v6.2 弯道上色
-  if (m.startsWith("#R,")) {                             // v6.2 圆屏方向（90° 一档）
-    int d = (m.substring(3).toInt() & 3) * 90;
-    if (d != screenDeg) { setScreenDeg(d, true); navDirty = true; needFlush = true; }
+  if (m.startsWith("#R,") || m.startsWith("#D")) {
+    // iOS sends #R,nearestQuarter,exactDegrees; Android sends #R then #Ddegrees.
+    // Preserve legacy #R,quarter while applying the exact angle when supplied.
+    int d;
+    if (ScreenRotationCommand::parse(m.c_str(), d) && d != screenDeg) {
+      setScreenDeg(d, true); navDirty = true; needFlush = true;
+    }
     return;
   }
   if (m.startsWith("#L")) {                              // v6.7 预判提前量："#L300"
@@ -8795,11 +9034,6 @@ void handleText(const String &m) {
       }
     }
 #endif
-    return;
-  }
-  if (m.startsWith("#D")) {                              // v6.4 圆屏方向任意角度："#D37"
-    int d = m.substring(2).toInt();
-    if (((d % 360) + 360) % 360 != screenDeg) { setScreenDeg(d, true); navDirty = true; needFlush = true; }
     return;
   }
   if (m.startsWith("#e")) {                              // v3.1 行程信息：剩余米,到达时间HHMM,红绿灯数
@@ -8945,6 +9179,7 @@ void handleText(const String &m) {
       navAngle = NAN;
     }
     inNav = true;
+    if (navDir != "A") idlePowerOffReset(&idlePowerOffTimer, millis());
     updateRingTarget();
     navDirty = true;
   }
@@ -8980,6 +9215,11 @@ void setup() {
   makeBleName();                                       // v7.0 先算好蓝牙名（首页要显示）
   Serial.begin(115200);
   Serial.setTxTimeoutMs(0);   // 没打开串口监视器时打印不等待（v1.2 的修复）
+  Serial.printf("Reset reason=%d, sleep wake=%d\n", (int)esp_reset_reason(),
+                (int)esp_sleep_get_wakeup_cause());
+  // Release the backlight RTC hold left by idle deep sleep.
+  rtc_gpio_hold_dis((gpio_num_t)LCD_BL);
+  rtc_gpio_deinit((gpio_num_t)LCD_BL);
   pinMode(LCD_BL,OUTPUT);digitalWrite(LCD_BL,LOW);
   backlightPWM=ledcAttach(LCD_BL,20000,8);
   Wire.begin(IIC_SDA, IIC_SCL);
@@ -8994,6 +9234,7 @@ void setup() {
     screenRot = pr.getInt("rot", 0) & 3;                            // v6.2 圆屏方向
     setScreenDeg(pr.getInt("rotd", screenRot * 90), false);         // v6.4 任意角度
     bootBrand = BootAnimation::valid(pr.getInt("bootbrand", 0));
+    hidMusicMode = pr.getBool("mediahid", false);
     fastFlushOn = pr.getBool("fastf", true);
     pr.end();
     if (qspiMHz != 40 && qspiMHz != 60 && qspiMHz != 80) qspiMHz = 40;
@@ -9061,14 +9302,93 @@ void setup() {
   txChar = svc->createCharacteristic(TX_UUID, BLECharacteristic::PROPERTY_NOTIFY);   // v2.0
   txChar->addDescriptor(new BLE2902());
   svc->start();
+  initMediaHid(server);
+  appleMedia.begin();
   BLEAdvertising *adv = BLEDevice::getAdvertising();
   adv->addServiceUUID(SERVICE_UUID);
+  adv->addServiceUUID(BLEUUID((uint16_t)0x1812));
+  adv->setAppearance(GENERIC_HID);
   adv->setScanResponse(true);
   BLEDevice::startAdvertising();
+  idlePowerOffReset(&idlePowerOffTimer, millis());
   Serial.println(String("MotoNav ready, firmware ") + FW_VERSION);
 }
 
+// Power down before destroying BLE objects: the host can still dispatch events
+// referencing those objects. Shutdown does not need to reclaim their memory.
+void idlePowerOffShutdown() {
+  powerOffPending = true;
+  Serial.println("No navigation for 5 minutes: powering off");
+  const bool displayReady = !flushDone ||
+      xSemaphoreTake(flushDone, pdMS_TO_TICKS(3000)) == pdTRUE;
+  if (displayReady) {
+    boardBrightness(0);
+    panel->displayOff();
+  }
+  // 1.85B has a BQ27220 fuel gauge and a separate hardware PWR latch.
+  // It has no AXP2101 software power-off register. Do not write 0x34.
+  // Enter deep sleep without a timer; BOOT wakes, PWR switches supply.
+  Serial.println("1.85B: entering deep sleep (BOOT to wake, PWR for hardware power off)");
+  if(backlightPWM) { ledcDetach(LCD_BL);backlightPWM=false; }
+  rtc_gpio_init((gpio_num_t)LCD_BL);
+  rtc_gpio_set_direction((gpio_num_t)LCD_BL, RTC_GPIO_MODE_OUTPUT_ONLY);
+  rtc_gpio_set_level((gpio_num_t)LCD_BL, 0);
+  rtc_gpio_hold_en((gpio_num_t)LCD_BL);
+  pinMode(PA,OUTPUT);digitalWrite(PA,LOW);
+  // Stop the host/controller without deleting live GATT objects. Deep sleep
+  // discards RAM anyway. Keep objects valid until pending callbacks have ended.
+#if defined(CONFIG_NIMBLE_ENABLED)
+  nimble_port_stop();
+#elif defined(CONFIG_BLUEDROID_ENABLED)
+  esp_bluedroid_disable();
+#endif
+#if CONFIG_BT_CONTROLLER_ENABLED
+  esp_bt_controller_disable();
+#endif
+  esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_ALL);
+  rtc_gpio_init(GPIO_NUM_0);
+  rtc_gpio_set_direction(GPIO_NUM_0, RTC_GPIO_MODE_INPUT_ONLY);
+  rtc_gpio_pullup_en(GPIO_NUM_0);
+  rtc_gpio_pulldown_dis(GPIO_NUM_0);
+  // EXT0 is level-triggered: arming it while BOOT is held low causes an
+  // immediate wake/reboot. Require 100 ms released, with a bounded wait.
+  uint32_t releasedAt = millis(), waitAt = releasedAt;
+  while (millis() - waitAt < 1500 && millis() - releasedAt < 100) {
+    if (!rtc_gpio_get_level(GPIO_NUM_0)) releasedAt = millis();
+    delay(10);
+  }
+  if (millis() - releasedAt >= 100 && rtc_gpio_get_level(GPIO_NUM_0)) {
+    esp_sleep_enable_ext0_wakeup(GPIO_NUM_0, 0);
+  } else {
+    Serial.println("BOOT is low; leave wake disabled to avoid instant restart (use PWR to power cycle)");
+  }
+  esp_deep_sleep_start();
+}
+
 void loop() {
+  hidMediaTick();                                      // press/release without blocking navigation
+  static uint32_t lyricConnectionEpoch = 0;
+  if (lyricConnectionEpoch != mediaConnectionEpoch) {
+    lyricConnectionEpoch = mediaConnectionEpoch; musicLyrics = false; lyricImageGeneration = 0;
+    imgs[12].showW = 0; imgs[12].showH = 0; imgs[12].recvId = -1; musicDirty = true;
+  }
+  appleMedia.tick(bleConnected && bleAuthed && hidMusicMode, bleConnHandle, mediaConnectionEpoch, millis());
+  static int lastControlMask = -1;
+  int controlMask = appleMedia.controlMask();
+  if (lastControlMask != controlMask) { lastControlMask = controlMask; pendingMediaStatus = String("AMC,") + controlMask; musicDirty = true; Serial.printf("MEDIA AMS controls=%d\n", controlMask); }
+  if (appleMedia.controlAck) { musicAck = appleMedia.controlAck > 0 ? 9 : 10; appleMedia.controlAck = 0; musicAckUntil = millis() + 2500; musicDirty = true; }
+  if (appleMedia.changed) {
+    appleMedia.changed = false; musicDirty = true;
+    static uint32_t lyricGeneration = 0; static uint16_t lyricTitleRevision = 0, lyricArtistRevision = 0;
+    if (lyricGeneration != appleMedia.generation || lyricTitleRevision != appleMedia.values[0].revision || lyricArtistRevision != appleMedia.values[1].revision) {
+      lyricImageGeneration = 0;
+      lyricGeneration = appleMedia.generation; lyricTitleRevision = appleMedia.values[0].revision; lyricArtistRevision = appleMedia.values[1].revision;
+      imgs[12].showW = 0; imgs[12].showH = 0; imgs[12].recvId = -1;
+    }
+    if (hidMusicMode) { musicHave = appleMedia.available && appleMedia.values[0].text.length(); musicPlaying = appleMedia.playback.known && appleMedia.playback.state == 1; }
+  }
+  static unsigned long mediaDrawAt = 0;
+  if (hidMusicMode && appleMedia.available && millis() - mediaDrawAt >= 1000) { mediaDrawAt = millis(); musicDirty = true; }
   saveRotIfDue();                                      // v6.4
   // v6.5 连上 60 秒还没通过验证（不是自己的手机）：断开，让自己的手机能连
 #if defined(CONFIG_NIMBLE_ENABLED)
@@ -9201,6 +9521,17 @@ void loop() {
     if (frameIsMap) flushAsync(); else flushSync();
     needFlush = false;
     frameIsMap = false;
+  }
+  // Idle phone traffic (including HID/AMS) does not count as navigation.
+  const bool navigating = idlePowerOffNavigationActive(
+      bleConnected && bleAuthed, inNav, cruiseOn, navDir == "A");
+  const bool interacting = pairOn || pairReq || callOn || touchDown || dragging || sliding;
+  if (idlePowerOffDue(&idlePowerOffTimer, millis(), navigating, interacting)) {
+    bool queued;
+    portENTER_CRITICAL(&mux);
+    queued = rxTail != rxHead;
+    portEXIT_CRITICAL(&mux);
+    if (!queued) idlePowerOffShutdown();
   }
   delay(mapNow ? 1 : 10);
 }

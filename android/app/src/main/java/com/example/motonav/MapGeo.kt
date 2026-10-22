@@ -10,7 +10,7 @@ import kotlin.math.sqrt
  * 版本：跟随 App 版本，见 MainActivity.kt 里的 APP_VERSION（v2.0 新增）
  *
  * 小地图用到的纯计算部分（不依赖安卓，可以单独测试）：
- * - WGS-84（OpenStreetMap 用的坐标）和 GCJ-02（高德用的坐标）互相换算
+ * - WGS-84（GPS 原生坐标）和 GCJ-02（高德用的坐标）互相换算
  * - 经纬度 ↔ 平面米坐标（以本次运行的第一个定位点为原点）
  * - 折线简化（Douglas-Peucker）、多边形拼接、裁剪
  * - 把地图块、导航路线打包成发给圆屏的二进制数据
@@ -327,7 +327,7 @@ object MapGeo {
         return b.b.toByteArray()
     }
 
-    // ---------------- v2.3 天地图图片地图 ----------------
+    // ---------------- v2.3 高德图片地图 ----------------
     // 颜色类别（圆屏按同样编号上色）：0 街区，1 道路，2 绿地，3 水面
     const val PX_BLOCK = 0
     const val PX_ROAD = 1
@@ -352,7 +352,7 @@ object MapGeo {
         return best
     }
 
-    /** 把天地图底图的一个像素颜色归类 */
+    /** 把高德底图的一个像素颜色归类 */
     fun classifyPixel(c: Int, bgLum: Int): Int {
         val r = (c shr 16) and 255; val g = (c shr 8) and 255; val b = c and 255
         val mx = maxOf(r, maxOf(g, b)); val mn = minOf(r, minOf(g, b))

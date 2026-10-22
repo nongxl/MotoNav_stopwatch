@@ -35,6 +35,8 @@ class AmapCaptureHost private constructor(private val context: Context,private v
     private var pending: ((AmapSdkRaster.Shot?,String?) -> Unit)?=null
     private var started=0L
     private var withoutBuildings: IntArray?=null
+    private var satelliteCapture=false
+    private var captureStyle=MapStylePolicy.VICE_CITY
     init {
         box.clipChildren=true
         box.importantForAccessibility=View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS
@@ -49,7 +51,7 @@ class AmapCaptureHost private constructor(private val context: Context,private v
         map.uiSettings.isScaleControlsEnabled=false
         map.isMyLocationEnabled=false; map.isTrafficEnabled=false
         map.mapType=AMap.MAP_TYPE_NORMAL
-        map.showBuildings(false); map.showIndoorMap(false); map.showMapText(false)
+        map.showBuildings(false); map.showIndoorMap(false); map.showMapText(captureStyle==MapStylePolicy.ORIGINAL)
         map.setOnMapLoadedListener { if (alive) { loaded=true; AmapSdkRaster.state="高德无字底图已就绪" } }
         val close=TextView(context).apply {
             text="×"; textSize=24f; gravity=Gravity.CENTER
@@ -75,10 +77,11 @@ class AmapCaptureHost private constructor(private val context: Context,private v
         view.pivotX=0f; view.pivotY=0f; view.scaleX=width.toFloat()/size; view.scaleY=width.toFloat()/size
         if (show) box.bringToFront() else { decor.removeView(box); decor.addView(box,0) }
     }
-    override fun capture(f: MapGeo.Frame,x0: Int,y0: Int,n: Int,done: (AmapSdkRaster.Shot?,String?) -> Unit) {
+    override fun capture(f: MapGeo.Frame,x0: Int,y0: Int,n: Int,satellite: Boolean,style: Int,done: (AmapSdkRaster.Shot?,String?) -> Unit) {
         if (!alive || !loaded) { done(null,"高德地图初始化中，稍后自动重试"); return }
         if (pending!=null) { done(null,"高德正在准备上一块底图"); return }
-        pending=done; box.keepScreenOn=true
+        pending=done; satelliteCapture=satellite;captureStyle=style; box.keepScreenOn=true
+        map.mapType=if(satellite)AMap.MAP_TYPE_SATELLITE else AMap.MAP_TYPE_NORMAL
         val id=++serial
         started=SystemClock.elapsedRealtime()
         AmapSdkRaster.state="正在加载高德无字底图"
@@ -88,12 +91,12 @@ class AmapCaptureHost private constructor(private val context: Context,private v
             size=wanted;view.layoutParams=FrameLayout.LayoutParams(size,size)
             setPreview(preview)
         }
-        map.showBuildings(false);withoutBuildings=null
+        map.showBuildings(style==MapStylePolicy.ORIGINAL);withoutBuildings=null
         val margin=if(n==600)20.0 else 160.0
-        val bounds=LatLngBounds(LatLng(f.lat(y0-n*2.0-margin),f.lng(x0-margin)),
-            LatLng(f.lat(y0+margin),f.lng(x0+n*2.0+margin)))
+        val bounds=LatLngBounds(LatLng(f.lat(y0-n*(if(satelliteCapture)3.5 else 2.0)-margin),f.lng(x0-margin)),
+            LatLng(f.lat(y0+margin),f.lng(x0+n*(if(satelliteCapture)3.5 else 2.0)+margin)))
         var cameraDone=false
-        map.showMapText(false)
+        map.showMapText(captureStyle==MapStylePolicy.ORIGINAL)
         map.setOnCameraChangeListener(object: AMap.OnCameraChangeListener {
             override fun onCameraChange(p: CameraPosition?) {}
             override fun onCameraChangeFinish(p: CameraPosition?) {
@@ -117,7 +120,7 @@ class AmapCaptureHost private constructor(private val context: Context,private v
     private fun request(id: Int,f: MapGeo.Frame,x0: Int,y0: Int,n: Int) {
         if (!alive || id!=serial || pending==null) return
         try {
-            map.showMapText(false)
+            map.showMapText(captureStyle==MapStylePolicy.ORIGINAL)
             map.getMapScreenShot(object: AMap.OnMapScreenShotListener {
                 override fun onMapScreenShot(bitmap: Bitmap?) {}
                 override fun onMapScreenShot(bitmap: Bitmap?,status: Int) {
@@ -135,8 +138,8 @@ class AmapCaptureHost private constructor(private val context: Context,private v
                             val camera=map.cameraPosition
                             if(n==600)require(camera.zoom>=17f){"楼块缩放级别不足，保留普通底图"}
                             require(abs(camera.tilt)<0.1 && minOf(abs(camera.bearing),abs(camera.bearing-360))<0.1) { "高德截图方向不正确" }
-                            val north=f.lat(y0.toDouble()); val south=f.lat(y0-n*2.0)
-                            val west=f.lng(x0.toDouble()); val east=f.lng(x0+n*2.0)
+                            val north=f.lat(y0.toDouble()); val south=f.lat(y0-n*(if(satelliteCapture)3.5 else 2.0))
+                            val west=f.lng(x0.toDouble()); val east=f.lng(x0+n*(if(satelliteCapture)3.5 else 2.0))
                             val projection=map.projection
                             val tl=projection.toScreenLocation(LatLng(north,west)); val tr=projection.toScreenLocation(LatLng(north,east))
                             val bl=projection.toScreenLocation(LatLng(south,west)); val br=projection.toScreenLocation(LatLng(south,east))
@@ -201,7 +204,7 @@ class AmapCaptureHost private constructor(private val context: Context,private v
             current?.let{return it}
             if(activityRef.get()!=null){refresh();return current}
             val context=serviceContext ?: return null
-            if(MapFeeder.source!=MapFeeder.SRC_AMAP || !MapFeeder.enabled || !MapStylePolicy.usesAmapCapture(MapFeeder.theme) || !Keys.hasAmap(context))return null
+            if(!MapProviderPolicy.usesAmap(MapFeeder.source,MapFeeder.theme) || !MapFeeder.enabled || !MapStylePolicy.usesAmapCapture(MapFeeder.theme) || !Keys.hasAmap(context))return null
             try {
                 val surface=MapCaptureDisplay(context);backgroundDisplay=surface
                 current=AmapCaptureHost(surface.viewContext,surface.decor,true)
@@ -214,10 +217,10 @@ class AmapCaptureHost private constructor(private val context: Context,private v
             val activity=activityRef.get()
             if(activity==null) {
                 val context=serviceContext ?: return
-                if(MapFeeder.source!=MapFeeder.SRC_AMAP || !MapFeeder.enabled || !MapStylePolicy.usesAmapCapture(MapFeeder.theme) || !Keys.hasAmap(context))destroyCurrent()
+                if(!MapProviderPolicy.usesAmap(MapFeeder.source,MapFeeder.theme) || !MapFeeder.enabled || !MapStylePolicy.usesAmapCapture(MapFeeder.theme) || !Keys.hasAmap(context))destroyCurrent()
                 return
             }
-            val needed=MapFeeder.source==MapFeeder.SRC_AMAP && MapFeeder.enabled && MapStylePolicy.usesAmapCapture(MapFeeder.theme) && Keys.hasAmap(activity)
+            val needed=MapProviderPolicy.usesAmap(MapFeeder.source,MapFeeder.theme) && MapFeeder.enabled && MapStylePolicy.usesAmapCapture(MapFeeder.theme) && Keys.hasAmap(activity)
             if (needed && current==null) try { current=AmapCaptureHost(activity,activity.window.decorView as ViewGroup) }
             catch (e: Exception) { AmapSdkRaster.state="高德渲染器初始化失败：${e.message ?: "未知错误"}" }
             if (!needed) destroyCurrent()

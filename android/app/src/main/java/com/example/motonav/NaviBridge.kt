@@ -152,6 +152,7 @@ object NaviBridge {
 
     /** v3.0 准备一次新的导航：拿到高德导航对象，挂上我们的“旁听”回调，清空上次的状态 */
     fun attach(context: Context): AMapNavi? {
+        WebMotorGuide.stop()
         val c = context.applicationContext
         endCruiseQuietly()                                                       // v4.7 开始导航前先结束巡航
         resetState()
@@ -196,6 +197,20 @@ object NaviBridge {
         RideRecorder.stop()
         active=false
         handler.removeCallbacks(tick)
+    }
+
+    /** Close SDK callbacks before the independent web-motor tracker owns BLE and map output. */
+    fun prepareWebMotorNavigation() {
+        arrivalSession.cancel(arrivalSession.generation())
+        endCruiseQuietly()
+        try { navi?.stopNavi() } catch (_: Exception) {}
+        ShareGuide.stop()
+        RideRecorder.stop()
+        routeCallback = null
+        resetState()
+        // Invalidate already queued SDK finish/reset jobs from the previous session as well.
+        val closedEpoch = arrivalSession.prepare()
+        arrivalSession.cancel(closedEpoch)
     }
 
     /** 打开高德原版导航组件：起点默认是“我的位置”，在组件里搜索目的地 */

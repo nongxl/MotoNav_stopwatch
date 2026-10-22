@@ -1,22 +1,23 @@
-$ErrorActionPreference='Stop'
-$taskJava=if($env:JAVA_HOME){Join-Path $env:JAVA_HOME 'bin/java.exe'}else{'java'}
-$taskJavac=if($env:JAVA_HOME){Join-Path $env:JAVA_HOME 'bin/javac.exe'}else{'javac'}
-$taskRoot=Split-Path -Parent $PSScriptRoot
-$taskClasses=Join-Path $taskRoot '.local/test-classes'
-$taskSource=Join-Path $taskRoot 'app/src/main/java/com/example/motonav'
-New-Item -ItemType Directory -Force $taskClasses | Out-Null
-$taskCases=@(
-    @{Sources=@('CruiseIdleTimer'); Test='CruiseIdleTimerTest'},
-    @{Sources=@('MapStylePolicy'); Test='MapStylePolicyTest'},
-    @{Sources=@('WeatherArea'); Test='WeatherAreaTest'},
-    @{Sources=@('ArrivalPolicy'); Test='ArrivalPolicyTest'},
-    @{Sources=@('RideTrackMath','MapLoadStatus'); Test='RideToolsTest'}
-)
-foreach($taskCase in $taskCases){
-    $taskFiles=@($taskCase.Sources | ForEach-Object {Join-Path $taskSource "${_}.java"})
-    $taskFiles+=Join-Path $PSScriptRoot ($taskCase.Test+'.java')
-    & $taskJavac -encoding UTF-8 -d $taskClasses @taskFiles
-    if($LASTEXITCODE -ne 0){throw "Compile failed: $($taskCase.Test)"}
-    & $taskJava -cp $taskClasses ('com.example.motonav.'+$taskCase.Test)
-    if($LASTEXITCODE -ne 0){throw "Test failed: $($taskCase.Test)"}
+param([string]$JavaPath = $env:JAVA_HOME)
+$ErrorActionPreference = 'Stop'
+$java = if ($JavaPath) { Join-Path $JavaPath 'bin/java.exe' } else { 'java' }
+$javac = if ($JavaPath) { Join-Path $JavaPath 'bin/javac.exe' } else { 'javac' }
+$root = Split-Path -Parent $PSScriptRoot
+$classes = Join-Path $root '.local/test-classes'
+$src = Join-Path $root 'app/src/main/java/com/example/motonav'
+New-Item -ItemType Directory -Force $classes | Out-Null
+$cases = @{
+    CruiseIdleTimerTest = @('CruiseIdleTimer.java')
+    MapStylePolicyTest = @('MapStylePolicy.java')
+    WeatherAreaTest = @('WeatherArea.java')
+    ArrivalPolicyTest = @('ArrivalPolicy.java')
+    RideToolsTest = @('RideTrackMath.java', 'MapLoadStatus.java')
+    MotorTrackTest = @('MotorTrack.java')
+}
+foreach ($test in $cases.Keys | Sort-Object) {
+    $sources = @($cases[$test] | ForEach-Object { Join-Path $src $_ })
+    & $javac -encoding UTF-8 -d $classes @sources (Join-Path $PSScriptRoot "$test.java")
+    if ($LASTEXITCODE -ne 0) { throw "$test compile failed" }
+    & $java -cp $classes "com.example.motonav.$test"
+    if ($LASTEXITCODE -ne 0) { throw "$test failed" }
 }

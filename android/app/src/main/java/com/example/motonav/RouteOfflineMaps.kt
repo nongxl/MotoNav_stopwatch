@@ -10,9 +10,9 @@ import kotlin.math.roundToInt
 /** 保存可直接发给圆屏的普通底图；完成后不依赖网络，也不再重算抗锯齿。 */
 class RouteOfflineMaps(private val ctx: Context, val frame: MapGeo.Frame, val plan: RouteMapPlan,
                        private val foregroundBusy: () -> Boolean,
-                       private val onReady: (RouteMapPlan.Node) -> Unit = {}, private val useAmap: Boolean=false, private val buildings: Boolean=false) {
+                       private val onReady: (RouteMapPlan.Node) -> Unit = {}, private val buildings: Boolean=false, private val style: Int=MapStylePolicy.VICE_CITY) {
     private val worker = Executors.newSingleThreadExecutor { r -> Thread(r, "route-offline").apply { priority=Thread.MIN_PRIORITY; isDaemon=true } }
-    private val dir = File(ctx.filesDir, "route_maps/${if (useAmap) (if(buildings) "amap-buildings-v1" else "amap-sdk-v3") else "v1"}/${frame.refLat}_${frame.refLng}").apply { mkdirs() }
+    private val dir = File(ctx.filesDir, "route_maps/${MapStylePolicy.cacheKey(style,buildings)}/${frame.refLat}_${frame.refLng}").apply { mkdirs() }
     private val ready = BooleanArray(plan.nodes.size)
     @Volatile private var closed = false
     @Volatile private var target = 0
@@ -21,7 +21,7 @@ class RouteOfflineMaps(private val ctx: Context, val frame: MapGeo.Frame, val pl
     private fun file(node: RouteMapPlan.Node) = File(dir, "${node.x.roundToInt()}_${node.y.roundToInt()}.bin")
     private fun baseFile(node: RouteMapPlan.Node)=File(ctx.filesDir,"route_maps/amap-sdk-v3/${frame.refLat}_${frame.refLng}/${node.x.roundToInt()}_${node.y.roundToInt()}.bin")
     fun readBase(node: RouteMapPlan.Node): ByteArray? {
-        if(!useAmap)return null
+        if(style!=MapStylePolicy.VICE_CITY)return null
         val f=baseFile(node)
         return try {
             if(!f.isFile || f.length() !in 17..480000)null
@@ -29,7 +29,7 @@ class RouteOfflineMaps(private val ctx: Context, val frame: MapGeo.Frame, val pl
         }catch(_:IOException){null}
     }
     private fun storeBase(node: RouteMapPlan.Node,bytes: ByteArray) {
-        if(closed || !useAmap)return
+        if(closed)return
         if(readBase(node)!=null)return
         val plain=RasterPacket.forLegacy(bytes)
         if(!RasterPacket.valid(plain,frame.id,(node.x-1200).roundToInt(),(node.y+1200).roundToInt()))throw IOException("普通地图包不完整")
@@ -84,11 +84,9 @@ class RouteOfflineMaps(private val ctx: Context, val frame: MapGeo.Frame, val pl
                 val node=plan.nodes[index]
                 try {
                     if (read(node)!=null) { ready[index]=true; onReady(node); continue }
-                    val r=if (useAmap) AmapSdkRaster.build(frame,node.x,node.y,1200.0,makePreview=false,
-                        shouldCancel={ closed || foregroundBusy() },includeBuildings=buildings,
+                    val r=AmapSdkRaster.build(frame,node.x,node.y,1200.0,makePreview=false,
+                        shouldCancel={ closed || foregroundBusy() },includeBuildings=buildings,style=style,
                         onBaseReady=if(buildings)({base->storeBase(node,base);onReady(node)})else null)
-                    else TdtRaster.build(ctx,frame,node.x,node.y,1200.0,vice=false,mpp=2.0,zoom=16,
-                        makePreview=false,background=true,shouldCancel={ closed || foregroundBusy() })
                     if (closed) return@execute
                     store(node,r.bytes); ready[index]=true; onReady(node)
                     retryAt=0L

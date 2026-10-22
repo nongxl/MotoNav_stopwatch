@@ -4,11 +4,6 @@ import android.content.Context
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
-import org.json.JSONArray
-import org.json.JSONObject
-import java.net.HttpURLConnection
-import java.net.URL
-import java.net.URLEncoder
 import java.util.concurrent.Executors
 import kotlin.math.cos
 import kotlin.math.roundToInt
@@ -19,14 +14,11 @@ import kotlin.math.sqrt
  * 版本：跟随 App 版本，见 MainActivity.kt 里的 APP_VERSION（v2.0 新增）
  *
  * 小地图数据：
- * - 从 OpenStreetMap（Overpass 接口）下载当前位置附近约 2.4 公里见方的道路、绿地、水面，
+ * - 使用高德 SDK 获取当前位置附近约 2.4 公里见方的底图，
  *   换算成高德坐标，简化压缩后发给圆屏（"地图块"）。快开出这一块时自动下载下一块（向前方偏移）。
  * - 导航路线（高德规划的路线坐标）单独打包发给圆屏，画成紫色。
  * - 每次定位把当前位置、朝向、车速发给圆屏："#p,坐标系,x分米,y分米,朝向,车速"。
  * - 圆屏收齐一个地图块/路线后会回一条确认；没确认的 8 秒后重发，重连后也会重发。
- * - v2.3 地图来源可选：天地图（图片地图，国内数据全，见 TdtRaster）/ OpenStreetMap（线条地图）/
- *   自动（天地图优先，失败换 OpenStreetMap）。坐标原点按所在区域固定（不再每次启动随机），
- *   App 重启后圆屏上已有的地图还能继续用。
  * - v2.8 夜间配色（"#n,1/0"，自动模式按日出日落切换）、走过的路线变灰/擦除（"#r,1/2"）。
  * - v4.8 清爽模式 "#w,1/0"（小地图保留，去掉红绿灯、电子眼、安全提示、测速牌和行程信息，配合固件 v4.9）
  * - v4.5 原路线（导入的高德分享路线）：大块数据类型 4，圆屏画成橙色细线；"#o" 不显示（配合固件 v4.4）
@@ -35,7 +27,7 @@ import kotlin.math.sqrt
  * - v6.3 圆屏方向任意角度 "#D角度"（配合固件 v6.4），同时照发 "#R" 给旧固件
  * - v7.2 预判提前量 "#L毫秒"（配合固件 v6.7）
  * - v8.0 路程进度条开关 "#M1" / "#M0"（配合固件 v7.3；默认开）；v8.1 固件 v7.4 起改成最外圈的行程环
- *   卫星图风格：改下天地图卫星照片（范围小一些：半边 700 米、每像素 3.5 米），压成 16 色连同调色板发给圆屏
+ *   卫星图风格：改下高德卫星照片（范围小一些：半边 700 米、每像素 3.5 米），压成 16 色连同调色板发给圆屏
  */
 object MapFeeder {
     private const val PREFS = "motonav"
@@ -48,17 +40,14 @@ object MapFeeder {
 
     const val TYPE_CHUNK = 1
     const val TYPE_ROUTE = 2
-    const val TYPE_RASTER = 3                  // v2.3 天地图图片地图
+    const val TYPE_RASTER = 3                  // v2.3 高德图片地图
     const val TYPE_GHOST = 4                   // v4.5 原路线
 
     // v2.3 地图来源
-    const val SRC_AUTO = 0
-    const val SRC_TDT = 1
-    const val SRC_OSM = 2
     const val SRC_AMAP = 3
-    @Volatile var source = SRC_AUTO
+    @Volatile var source = SRC_AMAP
         private set
-    @Volatile var previewRaw: android.graphics.Bitmap? = null   // 天地图原图（预览）
+    @Volatile var previewRaw: android.graphics.Bitmap? = null   // 高德原图（预览）
     @Volatile var previewCls: android.graphics.Bitmap? = null   // 归类上色后（预览）
     @Volatile var previewVer = 0
     // v2.5 地图配色主题：0 原版，1 罪恶都市（默认），2 GTA5；v5.9 增加 3~10
@@ -67,7 +56,7 @@ object MapFeeder {
     const val THEME_SAT = 10
     const val THEME_DRAGON = MapStylePolicy.DRAGON_RADAR
     fun routeOnly() = !MapStylePolicy.usesBasemap(theme)
-    val THEME_ORDER = listOf(1, 2, 0, 3, 4, 5, 6, 7, 8, 9, 10, THEME_DRAGON)   // 列表里的顺序
+    val THEME_ORDER = listOf(1, 0, 5, THEME_DRAGON)   // 列表里的顺序
     @Volatile var curve = false                                  // v5.9 弯道急缓上色
         private set
     private const val SAT_HALF = 700.0                           // v5.9 卫星图地图块半边长（米）
@@ -133,7 +122,7 @@ object MapFeeder {
     private var preparedRouteCoords: List<DoubleArray> = emptyList()
     @Volatile var buildingEnabled=true
         private set
-    fun buildingMode()=source==SRC_AMAP && buildingEnabled && BleLink.buildingsSupported
+    fun buildingMode()=theme==MapStylePolicy.VICE_CITY && source==SRC_AMAP && buildingEnabled && BleLink.buildingsSupported
     fun setBuildingEnabled(value: Boolean) {
         buildingEnabled=value
         ctx?.getSharedPreferences(PREFS,Context.MODE_PRIVATE)?.edit()?.putBoolean("map_buildings",value)?.apply()
@@ -163,7 +152,7 @@ object MapFeeder {
             frame=MapGeo.Frame(la,lo,id)
         }
         preparedRouteKey=key;preparedRouteCoords=coords.map { it.clone() }
-        if (!enabled || source == SRC_OSM || satMode() || routeOnly()) return
+        if (!enabled || satMode() || routeOnly()) return
         if (offlineKey == key && offlineMaps != null) return
         val f=frame ?: return
         val xy=DoubleArray(coords.size*2)
@@ -185,7 +174,7 @@ object MapFeeder {
                             (!buildingMode() || chunkBuildingsComplete || offlineMaps?.read(node)==null))) return@post
                         fetchChunk(f,node.x,node.y,node)
                     }
-                }, useAmap=source==SRC_AMAP,buildings=buildingMode())
+                }, buildings=buildingMode(), style=theme)
             offlineMaps?.start()
         } catch (e: Exception) { status="沿线离线地图准备失败：${e.message}" }
     }
@@ -240,14 +229,16 @@ object MapFeeder {
         val sp = ctx!!.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
         enabled = sp.getBoolean("map_on", true)
         buildingEnabled=sp.getBoolean("map_buildings",true)
-        source = sp.getInt("map_src", SRC_AUTO)
+        source = MapProviderPolicy.normalize(sp.getInt("map_src", SRC_AMAP))
+        sp.edit().putInt("map_src",source).apply()
         // 试用版首次覆盖安装时选高德；保留原来源，用户之后的选择不再被覆盖。
         if (!sp.getBoolean("amap_trial_837",false)) {
             sp.edit().putInt("amap_trial_previous_source",source).putBoolean("amap_trial_837",true)
                 .putInt("map_src",SRC_AMAP).apply()
             source=SRC_AMAP
         }
-        theme = sp.getInt("map_theme", 1)
+        theme = MapStylePolicy.normalize(sp.getInt("map_theme", 1))
+        if (theme != sp.getInt("map_theme", 1)) sp.edit().putInt("map_theme",theme).apply()
         nightMode = sp.getInt("map_night", NIGHT_AUTO)
         trail = sp.getInt("map_trail", TRAIL_GREY)
         clean = sp.getBoolean("clean_mode", false)
@@ -299,7 +290,7 @@ object MapFeeder {
         BleLink.send("#L$leadMs")
     }
 
-    /** 现在要不要下卫星图：选了卫星图风格就用天地图卫星照片（v5.9.1 不管地图来源选的是什么） */
+    /** 现在要不要下卫星图：选了卫星图风格就用高德卫星照片（v5.9.1 不管地图来源选的是什么） */
     private fun satMode() = theme == THEME_SAT
 
     /** v8.0 圆屏左边沿的路程进度条（"#M1" / "#M0"，固件 v7.3 起；不带逗号，旧固件忽略） */
@@ -347,13 +338,15 @@ object MapFeeder {
 
     fun setTheme(t: Int) {
         if (!MapStylePolicy.isValid(t)) return
+        val oldTheme = theme
         val wasSat = satMode()
         val wasRouteOnly = routeOnly()
         theme = t
         AmapCaptureHost.refresh()
         ctx?.getSharedPreferences(PREFS, Context.MODE_PRIVATE)?.edit()?.putInt("map_theme", t)?.apply()
-        BleLink.send("#t,$t")
-        if (wasSat != satMode() || wasRouteOnly != routeOnly()) {
+        BleLink.cancelBulk(TYPE_CHUNK, TYPE_RASTER)
+        BleLink.send("#t,$t,1")
+        if (oldTheme != theme || wasSat != satMode() || wasRouteOnly != routeOnly()) {
             clearOfflineRoute()
             requestSerial++ // In-flight captures/results must never install an old basemap.
             fetching = false
@@ -371,32 +364,23 @@ object MapFeeder {
     }
 
     fun themeName(t: Int = theme) = when (t) {
-        0 -> "原版"; 2 -> "GTA5"; 3 -> "赛博霓虹"; 4 -> "复古纸地图"; 5 -> "极简黑白"; 6 -> "蓝图"
-        7 -> "掌机像素"; 8 -> "雷达"; 9 -> "寻宝罗盘"; 10 -> "卫星图"; THEME_DRAGON -> "龙珠雷达"; else -> "罪恶都市"
+        0 -> "原版"; 5 -> "极简黑白"; THEME_DRAGON -> "龙珠雷达"; else -> "罪恶都市"
     }
 
     fun themeDesc(t: Int = theme) = when (t) {
-        0 -> "浅色地面、深色道路"
-        2 -> "深色地面、浅色道路、紫色路线"
-        3 -> "黑底青色道路、品红路线，夜里最酷"
-        4 -> "米黄纸色，白天太阳下最清楚；夜间配色时自动换成霓虹"
-        5 -> "黑底灰路，只有路线是白色，最不分心"
-        6 -> "深蓝底 + 跟着地图走的网格"
-        7 -> "老掌机的 4 色绿屏，大像素，帧率更高"
-        8 -> "墨绿单色 + 转动的扫描线和距离圈"
-        9 -> "六边形网格、罗盘刻度、目的地菱形脉冲"
-        10 -> "天地图卫星照片（数据大，范围小一些）"
-        THEME_DRAGON -> "绿色十字网格，无底图，仅导航路线；四星球标记终点（需固件7.8.10）"
-        else -> "暖沙色街区、粉紫路线（默认）"
+        0 -> "高德默认底图，保留原有颜色与地图标注"
+        5 -> "独立黑白道路网；无建筑、绿地、水面和地图文字"
+        THEME_DRAGON -> "绿色十字网格，无底图，仅导航路线；四星球标记终点"
+        else -> "暖沙色街区、青绿水面、粉紫路线，保持原有效果"
     }
 
     fun setSource(src: Int) {
         clearOfflineRoute()
-        source = src
+        source = MapProviderPolicy.normalize(src)
         AmapCaptureHost.refresh()
         requestSerial++
         fetching = false
-        ctx?.getSharedPreferences(PREFS, Context.MODE_PRIVATE)?.edit()?.putInt("map_src", src)?.apply()
+        ctx?.getSharedPreferences(PREFS, Context.MODE_PRIVATE)?.edit()?.putInt("map_src", source)?.apply()
         handler.post { haveChunk = false; lastFetchFail = 0L }      // 下次定位时按新来源重新下载
     }
 
@@ -408,7 +392,7 @@ object MapFeeder {
         handler.post { haveChunk = false; lastFetchFail = 0L }
     }
 
-    fun sourceName(src: Int = source) = when (src) { SRC_TDT -> "天地图"; SRC_OSM -> "OpenStreetMap"; SRC_AMAP -> "高德无字（试用）"; else -> "自动" }
+    fun sourceName() = "高德"
 
     fun setEnabled(on: Boolean) {
         enabled = on
@@ -451,7 +435,7 @@ object MapFeeder {
         val cy = if (haveConfirmedChunk) confirmedCy else chunkCy
         val sat = if (haveConfirmedChunk) confirmedSat else chunkSat
         val half = if (haveConfirmedChunk) confirmedHalf else chunkHalf
-        val offline=offlineMaps?.takeIf { !satMode() && source!=SRC_OSM }
+        val offline=offlineMaps?.takeIf { !satMode() }
         var target: RouteMapPlan.Node? = null
         if (offline!=null) {
             routeProgress=offline.plan.progress(x,y,routeProgress)
@@ -481,49 +465,39 @@ object MapFeeder {
         val startedAt = now()
         val serial = ++requestSerial
         status = "正在下载附近地图…"
-        val m = HALF + 150
-        // 自动来源退回 OSM 时仍用原来的范围及前移量，不能沿用高速大图的中心。
-        val fallbackCx = cx
-        val fallbackCy = cy
-        // 方框四角（高德坐标）→ WGS-84，给 OpenStreetMap 查询用
-        val sw = MapGeo.gcjToWgs(f.lat(fallbackCy - m), f.lng(fallbackCx - m))
-        val ne = MapGeo.gcjToWgs(f.lat(fallbackCy + m), f.lng(fallbackCx + m))
         val src = source
         val c = ctx
         val sat = satMode()
+        val style = theme
         val rasterHalf = HALF
-        val mpp = TdtRaster.MPP
-        val zoom = 16
         val offline=offlineMaps
         val knownBuildings=if(src==SRC_AMAP && buildingMode() && !chunkSat)chunkBytes else null
         worker.execute {
           if (serial != requestSerial || routeOnly()) return@execute
           try {
             var bytes: ByteArray? = null
-            var type = TYPE_CHUNK
+            var type = TYPE_RASTER
             var err = ""
             var info = ""
             var preparedBase: ByteArray? = null
             // 0. v5.9 卫星图
             if (sat && c != null) {
                 try {
-                    val r = TdtRaster.buildSat(c, f, cx, cy, SAT_HALF, shouldCancel={ serial!=requestSerial || routeOnly() })
+                    val r = AmapSdkRaster.build(f,cx,cy,SAT_HALF,shouldCancel={ serial!=requestSerial || routeOnly() },satellite=true)
                     bytes = r.bytes; type = TYPE_RASTER
                     if (r.previewRaw!=null) { previewRaw = r.previewRaw; previewCls = r.previewCls; previewVer++ }
-                    info = "天地图卫星图 ${r.tiles} 张瓦片（缓存 ${r.fromCache}），${r.bytes.size / 1024} KB"
+                    info = "高德卫星图 SDK 截图，${r.bytes.size / 1024} KB"
                 } catch (e: Exception) {
                     err = "卫星图：" + (e.message ?: e.javaClass.simpleName)
                 }
             }
-            // 1. 天地图（自动 / 天地图模式）
-            if (serial == requestSerial && !routeOnly() && bytes == null && src != SRC_OSM && c != null && (!sat || src!=SRC_AMAP)) {
+            // 1. 高德普通底图
+            if (serial == requestSerial && !routeOnly() && bytes == null && src == SRC_AMAP && c != null && !sat) {
                 try {
                     val cached=if (offlineNode!=null) offline?.read(offlineNode) ?: offline?.readBase(offlineNode) else null
-                    val r = if (cached!=null) TdtRaster.Result(cached,0,0,null,null) else
-                        if (src==SRC_AMAP) AmapSdkRaster.build(f,cx,cy,rasterHalf,makePreview=true,
-                            shouldCancel={ serial!=requestSerial },includeBuildings=buildingMode())
-                        else TdtRaster.build(c, f, cx, cy, rasterHalf, vice=false, mpp=mpp, zoom=zoom, makePreview=true,
-                            shouldCancel={ serial!=requestSerial || routeOnly() })
+                    val r = if (cached!=null) RasterResult(cached,0,0,null,null) else
+                        AmapSdkRaster.build(f,cx,cy,rasterHalf,makePreview=true,
+                            shouldCancel={ serial!=requestSerial },includeBuildings=buildingMode(),style=style)
                     // 缓存只保存这块真正完整的取图；旧楼块拼到普通图不冒充完成。
                     if (offlineNode!=null && cached==null) try { offline?.store(offlineNode,r.bytes) } catch (_: Exception) { }
                     val carried=if(src==SRC_AMAP && buildingMode())BuildingContinuity.merge(r.bytes,knownBuildings)else null
@@ -541,30 +515,18 @@ object MapFeeder {
                             chunkBaseBytes = base; chunkBytes = base
                             chunkBuildingsComplete=carried?.complete ?: RasterPacket.isBuilding(base)
                             chunkId = (chunkId + 1) and 0xFF; chunkAcked = false
-                            chunkInfo = "地图块 #$chunkId：${if (src==SRC_AMAP) "高德无字" else "天地图"}${if(chunkBuildingsComplete) "楼块底图" else "普通底图"}，${base.size / 1024} KB，覆盖 2.4 公里，2 米/像素" + (if (cached!=null) "（离线包）" else "") + (if((carried?.retained ?: 0)>0) "（保留重叠楼块）" else "")
+                            chunkInfo = "地图块 #$chunkId：${themeName(style)} · 高德${if(chunkBuildingsComplete) "楼块底图" else "普通底图"}，${base.size / 1024} KB，覆盖 2.4 公里，2 米/像素" + (if (cached!=null) "（离线包）" else "") + (if((carried?.retained ?: 0)>0) "（保留重叠楼块）" else "")
                             status = "普通底图已生成，正在传到圆屏"
                             sendChunk()
                         }
                     }
                     bytes = r.bytes; type = TYPE_RASTER
                     if (r.previewRaw!=null) { previewRaw = r.previewRaw; previewCls = r.previewCls; previewVer++ }
-                    info = if (src==SRC_AMAP) "高德 SDK 无字底图，${r.bytes.size/1024} KB" else "天地图 ${r.tiles} 张瓦片（缓存 ${r.fromCache}），${r.bytes.size / 1024} KB"
+                    info = if (src==SRC_AMAP) "高德 SDK 无字底图，${r.bytes.size/1024} KB" else "高德 ${r.tiles} 张瓦片（缓存 ${r.fromCache}），${r.bytes.size / 1024} KB"
                 } catch (e: Exception) {
-                    err = (if (src==SRC_AMAP) "高德：" else "天地图：") + (e.message ?: e.javaClass.simpleName)
+                    err = (if (src==SRC_AMAP) "高德：" else "高德：") + (e.message ?: e.javaClass.simpleName)
                     val fallback = preparedBase
-                    if (fallback != null) { bytes = fallback; type = TYPE_RASTER; info = "天地图普通底图，平滑暂不可用" }
-                }
-            }
-            // 2. OpenStreetMap（OSM 模式，或自动模式下天地图失败）
-            if (serial == requestSerial && !routeOnly() && bytes == null && src != SRC_TDT && src!=SRC_AMAP) {
-                try {
-                    val json = OsmFetch.query(sw[0], sw[1], ne[0], ne[1])
-                    val feats = OsmFetch.parse(json, f)
-                    bytes = MapGeo.encodeChunk(f.id, fallbackCx, fallbackCy, HALF, feats, MAX_BYTES, MAX_FEAT)
-                    type = TYPE_CHUNK
-                    info = "OpenStreetMap ${feats.size} 个要素，${bytes.size / 1024} KB"
-                } catch (e: Exception) {
-                    err += (if (err.isNotEmpty()) "；" else "") + "OSM：" + (e.message ?: e.javaClass.simpleName)
+                    if (fallback != null) { bytes = fallback; type = TYPE_RASTER; info = "高德普通底图，平滑暂不可用" }
                 }
             }
             handler.post {
@@ -581,9 +543,9 @@ object MapFeeder {
                     return@post
                 }
                 haveChunk = true
-                chunkSat = sat && info.startsWith("天地图卫星图")
-                chunkCx = if (type == TYPE_CHUNK) fallbackCx else cx
-                chunkCy = if (type == TYPE_CHUNK) fallbackCy else cy
+                chunkSat = sat && info.startsWith("高德卫星图")
+                chunkCx = cx
+                chunkCy = cy
                 chunkId = (chunkId + 1) and 0xFF
                 chunkBytes = b
                 chunkBaseBytes = b
@@ -708,7 +670,7 @@ object MapFeeder {
         BleLink.sendEvent("#GB?")
         handler.post {
             BleLink.send(if (enabled) "#m,1" else "#m,0")
-            BleLink.send("#t,$theme")                    // v2.5 配色主题
+            BleLink.send("#t,$theme,1")                    // v2.5 配色主题
             BleLink.send("#r,$trail")                    // v2.8 走过的路线
             BleLink.send(if (clean) "#w,1" else "#w,0")   // v4.8 清爽模式
             BleLink.send(if (curve) "#Q,1" else "#Q,0")   // v5.9 弯道急缓上色（v6.1 改用 #Q）
@@ -753,113 +715,3 @@ object MapFeeder {
     }
 }
 
-/** 从 OpenStreetMap 的 Overpass 接口下载并解析道路、绿地、水面 */
-object OsmFetch {
-    private val SERVERS = listOf(
-        "https://overpass-api.de/api/interpreter",
-        "https://overpass.kumi.systems/api/interpreter",
-        "https://maps.mail.ru/osm/tools/overpass/api/interpreter"
-    )
-
-    fun query(s: Double, w: Double, n: Double, e: Double): String {
-        val bb = "%.6f,%.6f,%.6f,%.6f".format(java.util.Locale.US, s, w, n, e)
-        val q = """
-            [out:json][timeout:25];
-            (
-              way["highway"~"^(motorway|trunk|primary|secondary|tertiary|unclassified|residential|living_street|service|motorway_link|trunk_link|primary_link|secondary_link|tertiary_link)$"]($bb);
-              way["leisure"~"^(park|garden|pitch|golf_course|nature_reserve)$"]($bb);
-              way["landuse"~"^(grass|forest|meadow|recreation_ground|village_green|park|reservoir|basin)$"]($bb);
-              way["natural"~"^(wood|scrub|grassland|water)$"]($bb);
-              way["waterway"="riverbank"]($bb);
-              relation["natural"="water"]($bb);
-              relation["leisure"="park"]($bb);
-              relation["landuse"~"^(forest|grass)$"]($bb);
-            );
-            out geom;
-        """.trimIndent()
-        var last: Exception? = null
-        for (srv in SERVERS) {
-            try {
-                val c = URL(srv).openConnection() as HttpURLConnection
-                c.connectTimeout = 10_000
-                c.readTimeout = 40_000
-                c.requestMethod = "POST"
-                c.doOutput = true
-                c.setRequestProperty("User-Agent", "MotoNav/2.0 (personal motorcycle display)")
-                c.setRequestProperty("Content-Type", "application/x-www-form-urlencoded")
-                c.outputStream.use { it.write(("data=" + URLEncoder.encode(q, "UTF-8")).toByteArray()) }
-                if (c.responseCode != 200) throw Exception("HTTP ${c.responseCode}")
-                return c.inputStream.bufferedReader().use { it.readText() }
-            } catch (ex: Exception) {
-                last = ex
-            }
-        }
-        throw last ?: Exception("无法连接地图服务器")
-    }
-
-    /** 根据标签决定类别：返回 Pair(类别, 是否面)，不需要的返回 null */
-    private fun classify(tags: JSONObject?): Pair<Int, Boolean>? {
-        if (tags == null) return null
-        val hw = tags.optString("highway", "")
-        if (hw.isNotEmpty()) {
-            val c = when (hw) {
-                "motorway", "trunk" -> 1
-                "primary" -> 2
-                "secondary", "tertiary" -> 3
-                "residential", "unclassified", "living_street" -> 4
-                "service", "motorway_link", "trunk_link", "primary_link", "secondary_link", "tertiary_link" -> 5
-                else -> return null
-            }
-            if (tags.optString("area", "") == "yes") return null
-            return Pair(c, false)
-        }
-        val natural = tags.optString("natural", "")
-        val landuse = tags.optString("landuse", "")
-        if (natural == "water" || tags.optString("waterway", "") == "riverbank" ||
-            landuse == "reservoir" || landuse == "basin") return Pair(MapGeo.CLS_WATER, true)
-        if (tags.has("leisure") || landuse.isNotEmpty() || natural.isNotEmpty()) return Pair(MapGeo.CLS_PARK, true)
-        return null
-    }
-
-    private fun geom(arr: JSONArray?, f: MapGeo.Frame): DoubleArray? {
-        if (arr == null || arr.length() < 2) return null
-        val out = DoubleArray(arr.length() * 2)
-        var n = 0
-        for (i in 0 until arr.length()) {
-            val p = arr.optJSONObject(i) ?: continue
-            val g = MapGeo.wgsToGcj(p.getDouble("lat"), p.getDouble("lon"))
-            out[2 * n] = f.x(g[1]); out[2 * n + 1] = f.y(g[0]); n++
-        }
-        return if (n >= 2) out.copyOf(n * 2) else null
-    }
-
-    fun parse(json: String, f: MapGeo.Frame): List<MapGeo.Feature> {
-        val els = JSONObject(json).optJSONArray("elements") ?: return emptyList()
-        val out = ArrayList<MapGeo.Feature>()
-        for (i in 0 until els.length()) {
-            val el = els.optJSONObject(i) ?: continue
-            val cls = classify(el.optJSONObject("tags")) ?: continue
-            when (el.optString("type")) {
-                "way" -> {
-                    val g = geom(el.optJSONArray("geometry"), f) ?: continue
-                    if (cls.second && g.size < 6) continue
-                    out.add(MapGeo.Feature(cls.first, cls.second, g))
-                }
-                "relation" -> {
-                    if (!cls.second) continue
-                    val mem = el.optJSONArray("members") ?: continue
-                    val parts = ArrayList<DoubleArray>()
-                    for (j in 0 until mem.length()) {
-                        val m = mem.optJSONObject(j) ?: continue
-                        if (m.optString("type") != "way") continue
-                        val role = m.optString("role", "")
-                        if (role != "outer" && role != "") continue
-                        geom(m.optJSONArray("geometry"), f)?.let { parts.add(it) }
-                    }
-                    for (r in MapGeo.joinRings(parts)) if (r.size >= 6) out.add(MapGeo.Feature(cls.first, true, r))
-                }
-            }
-        }
-        return out
-    }
-}

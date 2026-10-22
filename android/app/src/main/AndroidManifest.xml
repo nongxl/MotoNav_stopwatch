@@ -55,6 +55,10 @@
             </intent-filter>
         </activity>
 
+        <activity android:name=".MotorWebActivity" android:exported="false"
+            android:windowSoftInputMode="adjustResize" />
+        <activity android:name=".MotorWebNavActivity" android:exported="false" />
+
         <!-- v3.0 搜索目的地 + 选路线 -->
         <activity
             android:name=".RoutePlanActivity"
@@ -115,7 +119,7 @@
                 android:resource="@xml/amap_screen_reader" />
         </service>
 
-        <!-- v6.5 不再在这里放 key：高德、天地图的 key 都在 App 里填（Keys.kt 启动时交给高德 SDK） -->
+        <!-- v6.5 不再在这里放 key：高德 key 在 App 里填（Keys.kt 启动时交给高德 SDK） -->
 
         <service android:name="com.amap.api.location.APSService" />
 

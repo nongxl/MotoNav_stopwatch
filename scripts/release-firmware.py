@@ -135,7 +135,7 @@ def main():
     if existing.returncode==0:
         require(json.loads(existing.stdout)['targetCommitish']==commit,'Existing release points to a different commit; refusing to replace it')
     else:
-        run('gh','release','create',tag,'--target',commit,'--title',f'MotoNav 圆屏 7.12.1 · 安卓/iOS通用 · 关机修复','--notes-file',notes,'--draft')
+        run('gh','release','create',tag,'--target',commit,'--title',f'MotoNav 圆屏 {version} · 安卓/iOS通用','--notes-file',notes,'--draft')
     run('gh','release','upload',tag,*assets,'--clobber')
     run('gh','release','edit',tag,'--notes-file',notes,'--draft=false','--latest=false')
     print('Published '+tag,flush=True)

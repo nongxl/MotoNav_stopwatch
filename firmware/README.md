@@ -31,3 +31,9 @@ python3 -m unittest discover -s firmware/tests -p 'test_flash_macos.py'
 ```
 
 `windows-flasher/` 保存独立包的脚本源码。`releases/7.12.1/` 保存本次已校验包的发布输入分片，发布流程校验并组装原 ZIP；日常下载请使用 Release 成品。
+
+## 7.12.3 本次更新
+
+四种独立地图风格及 1.75 外部供电保护详见 [7.12.3 说明](../docs/RELEASE-FIRMWARE-7.12.3.md)。Android 配套版本为 8.3.23-webmotor.4。iOS 源码/IPA 本次不变，既有 BLE 协议保留；不表示新增 Android 功能已在 iOS 实现。
+
+`boards/185b` 提供 v7.12.3-185B 实验源码，PowerShell 构建可选 `-Board 185b -PanelVariant 0/1/2`；1.75 的外接电源保护未移植过去。不同板型禁止混刷。当前仅源码更新，历史 Release 下载不代表 7.12.3。

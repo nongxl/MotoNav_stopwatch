@@ -44,6 +44,7 @@ if(-not(Test-Path "$SdkPath/platforms/android-35/android.jar") -or -not(Test-Pat
 $identity=Join-Path $project 'personal.properties'
 $signing=Join-Path $project 'keystore/keystore.properties'
 $keyfile=Join-Path $project 'keystore/personal.jks'
+New-Item -ItemType Directory -Force (Split-Path -Parent $keyfile) | Out-Null
 if(-not(Test-Path $identity)) {
     if(Test-Path $keyfile){throw 'personal.properties missing. Restore it from your backup before continuing.'}
     $appId='com.motonav.u'+[Guid]::NewGuid().ToString('N')
