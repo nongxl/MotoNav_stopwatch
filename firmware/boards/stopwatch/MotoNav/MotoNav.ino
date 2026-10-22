@@ -249,6 +249,8 @@
 #include "Arduino_GFX_Library.h"
 #include "pin_config.h"
 #include "BoardStopWatchInit.h"   // StopWatch：M5IOE1 扩展芯片（屏供电/复位/触摸复位）
+#include "RtcRX8130.h"            // StopWatch：RX8130CE RTC 离线精准时钟
+#include "LeanAngleMeter.h"       // StopWatch：BMI270 摩托车倾角与 G 值仪表
 #include <Wire.h>
 #include "TouchDrvCSTXXX.hpp"     // v5.2 触摸屏（SensorLib 库，微雪示例里带的）
 #include <Preferences.h>
@@ -2158,17 +2160,22 @@ void animateCat() {
   needFlush = true;
 }
 
-// 页面：导航左滑天气，右滑音乐，上下滑也可查看天气
-int page = 0;                               // 0 = 导航 / 首页，1 = 天气，2 = 音乐
+// 页面：导航左滑天气，右滑音乐，上滑进入倾角仪表，下滑可查看天气
+int page = 0;                               // 0 = 导航 / 首页，1 = 天气，2 = 音乐，3 = 倾角与G值仪表
 unsigned long pageAt = 0;
+bool leanDirty = false;
+void drawLeanMeter();
+void leanMeterTap(int x, int y);
 
-// 页面顺序对应滑动位置：音乐在左，主页居中，天气在右；导航主页不显示。
+// 页面顺序对应滑动位置：音乐在左(2)，主页居中(0)，天气在右(1)，倾角仪表在下(3)
 void drawPageDots() {
   if (page == 0 && inNav) return;
   const int pageOrder[] = {2, 0, 1};
   for (int i = 0; i < 3; i++) {
-    aaDisc(CX + (i - 1) * 20, 444, 4, page == pageOrder[i] ? C_WHITE : 0x4208);
+    aaDisc(CX + (i - 1) * 18, 436, 3.5f, page == pageOrder[i] ? C_WHITE : 0x4208);
   }
+  // 底部第4点：倾角与G值仪表在下方(3)，直观提示用户下方还有一个页面
+  aaDisc(CX, 451, 3.5f, page == 3 ? C_WHITE : 0x4208);
 }
 
 void drawWaiting(int st) {
@@ -2176,6 +2183,7 @@ void drawWaiting(int st) {
   if (sliding) return;                                                 // v5.5 正在滑动：滑完再画
   if (page == 2) { onWaitScreen = false; musicDirty = true; return; }
   if (page == 1) { onWaitScreen = false; wxDirty = true; return; }   // v5.3 正在看天气：先不画首页，滑回来时再画
+  if (page == 3) { onWaitScreen = false; leanDirty = true; return; } // 正在看倾角仪表：先不画首页，滑回来时再画
   gfx->fillScreen(C_BLACK);
   onWaitScreen = true; waitSt = st;          // v3.6 首页猫猫 → v4.6 像素骑手
   riderPrevF = -1; riderPrevZ = -2;
@@ -2427,25 +2435,89 @@ void touchInit() {
 
 // StopWatch：用户按键换页（与触摸手势等价）
 //   面对屏幕看：左侧是 A 键，右侧是 B 键
-//   主页：A 键(左) → 音乐页(page 2，从左滑入)，B 键(右) → 天气页(page 1，从右滑入)
-//   天气/音乐页：任意键 → 回主页（按进来方向的反向滑回，和手势一致）
+//   主页单按：A 键(左) → 音乐页(page 2，从左滑入)，B 键(右) → 天气页(page 1，从右滑入)
+//   天气/音乐页单按：任意键 → 回主页（按进来方向的反向滑回，和手势一致）
+//   同时按住 AB 键：
+//     - 若不在倾角/G值表：切换到倾角/G值表(page 3，从下方滑入)
+//     - 若在倾角/G值表：返回主界面(向下滑回主界面)
 void buttonTick() {
   static bool lastA = true, lastB = true;
-  static unsigned long lastAt = 0;
-  bool a = digitalRead(BTN_A), b = digitalRead(BTN_B);
-  if (a && b) { lastA = a; lastB = b; return; }          // 没有按下
+  static int pendingKey = 0;             // 1=A 等待确认, 2=B 等待确认
+  static unsigned long pendingAt = 0;    // 开始等待的时间戳
+  static bool comboActive = false;       // 组合键已触发锁
+  static unsigned long lastActionAt = 0; // 上次动作时间（防误触连按）
+
+  bool a = digitalRead(BTN_A);
+  bool b = digitalRead(BTN_B);
   unsigned long now = millis();
-  if (now - lastAt < 250) { lastA = a; lastB = b; return; }   // 防抖 + 连按间隔
-  int key = 0;
-  if (!a && lastA) key = 1;      // A 键 (左侧)
-  else if (!b && lastB) key = 2; // B 键 (右侧)
-  lastAt = now; lastA = a; lastB = b;
-  if (!key) return;
-  if (sliding || callOn || pairOn || fxOn) return;   // 动画/来电/配对/特效进行中不响应（sliding 已覆盖拖动动画态）
-  // 面对屏幕：左侧 A 键切音乐(从左滑入)，右侧 B 键切天气(从右滑入)
-  // 回主页按进入方向的反向滑回：从音乐返回向左滑(-1)，从天气返回向右滑(1)
-  if (page == 0) showPageAnimated(key == 1 ? 2 : 1, key == 1 ? 1 : -1, 0);
-  else showPageAnimated(0, page == 2 ? -1 : 1, 0);
+
+  // 当两个按键都释放时，解除组合键锁定
+  if (a && b) {
+    comboActive = false;
+  }
+
+  // 1. 同时按住 AB 键检测（优先级最高）
+  if (!a && !b) {
+    pendingKey = 0; // 取消单键等待
+    if (!comboActive && (now - lastActionAt > 350)) {
+      comboActive = true;
+      lastActionAt = now;
+      lastA = a; lastB = b;
+
+      if (sliding || callOn || pairOn || fxOn) return;
+
+      // 同时按住 AB 键：切换倾角/G值表 <-> 主界面
+      if (page != 3) {
+        showPageAnimated(3, 0, -1); // 从下方滑入倾角/G值表
+      } else {
+        showPageAnimated(0, 0, 1);  // 向下滑回主界面
+      }
+      return;
+    }
+    lastA = a; lastB = b;
+    return;
+  }
+
+  // 若刚刚触发过组合键，且按键尚未完全松开，避免误触发单键
+  if (comboActive) {
+    lastA = a; lastB = b;
+    return;
+  }
+
+  // 2. 检测单键刚按下：给予 65ms 判定窗口，确认用户是否意在同时按住 AB 键
+  if (!a && lastA && pendingKey == 0) {
+    pendingKey = 1;
+    pendingAt = now;
+  } else if (!b && lastB && pendingKey == 0) {
+    pendingKey = 2;
+    pendingAt = now;
+  }
+
+  // 3. 单键判定超时或按键抬起确认
+  if (pendingKey > 0) {
+    if (now - pendingAt >= 65 || (pendingKey == 1 && a) || (pendingKey == 2 && b)) {
+      int key = pendingKey;
+      pendingKey = 0;
+      if (now - lastActionAt > 250) {
+        lastActionAt = now;
+        if (!sliding && !callOn && !pairOn && !fxOn) {
+          if (page == 0) {
+            // 主页：A 键切音乐(从左滑入)，B 键切天气(从右滑入)
+            showPageAnimated(key == 1 ? 2 : 1, key == 1 ? 1 : -1, 0);
+          } else if (page == 3) {
+            // 倾角仪表页：单按也可退回主页(向下退出)
+            showPageAnimated(0, 0, 1);
+          } else {
+            // 音乐或天气页：单按退回主页
+            showPageAnimated(0, page == 2 ? -1 : 1, 0);
+          }
+        }
+      }
+    }
+  }
+
+  lastA = a;
+  lastB = b;
 }
 
 bool touchDown = false;
@@ -2460,6 +2532,7 @@ void dragAbort();
 // 手指离开超过 0.15 秒才算松开（防止读数偶尔丢一下）
 void touchPoll() {
   static unsigned long lastPoll = 0;
+  static bool calibTriggered = false;
   unsigned long now = millis();
   if (!touchOK) return;
   if (!touchIrq && !touchDown && !callOn) return;
@@ -2480,15 +2553,36 @@ void touchPoll() {
     }
     touchX1 = x[0]; touchY1 = y[0];
     touchLastSeen = now;
+
+    // 倾角仪表页面：校准按钮长按 1.5 秒判定，彻底杜绝骑行轻碰误触
+    if (page == 3 && touchDown) {
+      float tdx = touchX0 - CX, tdy = touchY0 - CX;
+      touchVectorToCanvas(tdx, tdy);
+      int cy0 = (int)lroundf(CX + tdy);
+      int cx0 = (int)lroundf(CX + tdx);
+      if (cy0 >= 370 && cx0 >= 80 && cx0 <= 245) {
+        if (now - touchHoldAt >= 1500 && !calibTriggered) {
+          calibTriggered = true;
+          LeanAngleMeter::calibrateZero();
+          #ifdef M5PM1_ADDR
+          M5PM1.setVibration(120);
+          #endif
+          leanDirty = true;
+        }
+      }
+    }
+
     if (callOn || pairOn || touchEat || fxOn) dragAbort();
     else dragMove(touchX1 - touchX0, touchY1 - touchY0, now);
   } else if (touchDown && now - touchLastSeen > 80) {
     touchDown = false;
     touchHoldAt = 0;
+    calibTriggered = false;
     if (callOn || pairOn || touchEat || fxOn) dragAbort();
     else {
       if (page == 2 && abs(touchX1 - touchX0) < 36 && abs(touchY1 - touchY0) < 36) musicTap(touchX0, touchY0);
       if (page == 1 && abs(touchX1 - touchX0) < 36 && abs(touchY1 - touchY0) < 36) weatherTap();
+      if (page == 3 && abs(touchX1 - touchX0) < 36 && abs(touchY1 - touchY0) < 36) leanMeterTap(touchX0, touchY0);
       dragEnd();
     }
     touchEat = false;
@@ -2855,6 +2949,262 @@ void drawMusic() {
   needFlush = true;
 }
 
+extern bool dragging;
+
+static inline uint16_t blend565(uint16_t fg, uint16_t bg, uint8_t alpha) {
+  uint32_t r1 = (fg >> 11) & 0x1F, g1 = (fg >> 5) & 0x3F, b1 = fg & 0x1F;
+  uint32_t r2 = (bg >> 11) & 0x1F, g2 = (bg >> 5) & 0x3F, b2 = bg & 0x1F;
+  uint32_t r = (r1 * alpha + r2 * (255 - alpha)) >> 8;
+  uint32_t g = (g1 * alpha + g2 * (255 - alpha)) >> 8;
+  uint32_t b = (b1 * alpha + b2 * (255 - alpha)) >> 8;
+  return (uint16_t)((r << 11) | (g << 5) | b);
+}
+
+static float gTrace[64] = {0};
+static int gTraceIdx = 0;
+static unsigned long lastTracePush = 0;
+
+static void drawMiniRider(int x0, int y0) {
+  for (int y = 0; y < RIDER_H; y++) {
+    const char *row = RIDER[0][y];
+    for (int x = 0; row[x] && x < RIDER_W; x++) {
+      uint16_t c = riderColor(row[x]);
+      if (c || row[x] == 'K') gfx->drawPixel(x0 + x, y0 + y, c ? c : 0x18C6);
+    }
+  }
+}
+
+void drawLeanMeter() {
+  onWaitScreen = false;
+  frameIsMap = false;
+  gfx->fillScreen(C_BLACK);
+
+  // 1. 顶部状态栏：左侧蓝牙点
+  aaDisc(CX - 150, 34, 4, bleConnected ? C_GREEN : C_GREY);
+
+  // 2. 外边缘霓虹科技弧线 (Cyber Accents)
+  // 左下边缘弧 (鲜艳青色 0x07F3)
+  for (float a = 130.0f; a <= 210.0f; a += 0.5f) {
+    float rad = a * (float)M_PI / 180.0f;
+    float ca = cosf(rad), sa = sinf(rad);
+    for (int r = 227; r <= 231; r++) {
+      gfx->drawPixel((int)lroundf(CX + r * ca), (int)lroundf(CX + r * sa), 0x07F3);
+    }
+  }
+  // 右上边缘弧 (霓虹粉紫 0xF955)
+  for (float a = 310.0f; a <= 390.0f; a += 0.5f) {
+    float rad = a * (float)M_PI / 180.0f;
+    float ca = cosf(rad), sa = sinf(rad);
+    for (int r = 228; r <= 231; r++) {
+      gfx->drawPixel((int)lroundf(CX + r * ca), (int)lroundf(CX + r * sa), 0xF955);
+    }
+  }
+  // 顶部外框微细刻度
+  for (int a = 240; a <= 300; a += 10) {
+    float rad = a * (float)M_PI / 180.0f;
+    float ca = cosf(rad), sa = sinf(rad);
+    int x1 = (int)lroundf(CX + 224 * ca), y1 = (int)lroundf(CX + 224 * sa);
+    int x2 = (int)lroundf(CX + 232 * ca), y2 = (int)lroundf(CX + 232 * sa);
+    gfx->drawLine(x1, y1, x2, y2, 0x39E7);
+  }
+
+  // 3. 顶部 Header
+  printCentered("UNIT GS / VECTOR", CX, 34, 1, 0x07F3);
+  printCentered("G-FORCE", CX, 56, 3, C_WHITE);
+  // 右上角像素骑手头像
+  drawMiniRider(365, 46);
+
+  // 4. 实时倾角与动态平滑 G 值运算
+  float curLean = LeanAngleMeter::leanAngle;
+  float absCurLean = fabsf(curLean);
+  char leanStr[16];
+  if (absCurLean < 0.5f) {
+    snprintf(leanStr, sizeof(leanStr), "0*");
+  } else if (curLean < 0) {
+    snprintf(leanStr, sizeof(leanStr), "-%d*", (int)lroundf(absCurLean));
+  } else {
+    snprintf(leanStr, sizeof(leanStr), "+%d*", (int)lroundf(absCurLean));
+  }
+
+  static float dispG = 0.0f;
+  float targetG = LeanAngleMeter::gTotal;
+  if (fabsf(targetG - dispG) > 0.015f) {
+    dispG += 0.12f * (targetG - dispG);
+  }
+  if (dispG < 0.02f) dispG = 0.0f;
+
+  // 5. 核心主读数：[ 0.99 ] G 样式
+  // 左侧粗青括号 [
+  gfx->fillRect(138, 114, 5, 48, 0x07F3);
+  gfx->fillRect(143, 114, 9, 4, 0x07F3);
+  gfx->fillRect(143, 158, 9, 4, 0x07F3);
+
+  // 大号数字 (size 6)
+  char gNumBuf[16];
+  snprintf(gNumBuf, sizeof(gNumBuf), "%.2f", dispG);
+  printCentered(gNumBuf, 226, 138, 6, C_WHITE);
+
+  // 单位 "G" (size 3 霓虹青)
+  printCentered("G", 308, 146, 3, 0x07F3);
+
+  // 右侧粉红细括号 ]
+  gfx->fillRect(334, 116, 3, 44, 0xF955);
+  gfx->fillRect(326, 116, 8, 3, 0xF955);
+  gfx->fillRect(326, 157, 8, 3, 0xF955);
+
+  // 读数副标题：融合倾角与横向 G 说明
+  char subStr[48];
+  snprintf(subStr, sizeof(subStr), "LATERAL G-S / LEAN %s", leanStr);
+  printCentered(subStr, CX, 175, 1, 0xF955);
+
+  // 6. 中部三列遥测：左侧极值、中置雷达十字、右侧陀螺仪/电量
+  // ---- 左侧数据列 (X = 90) ----
+  printCentered("PEAK G", 90, 214, 1, 0xF955);
+  char maxGBuf[16];
+  snprintf(maxGBuf, sizeof(maxGBuf), "%.2f", LeanAngleMeter::maxG);
+  printCentered(maxGBuf, 90, 230, 3, C_WHITE);
+
+  printCentered("MAX LEAN", 90, 268, 1, 0x9CD3);
+  char maxLStr[24];
+  snprintf(maxLStr, sizeof(maxLStr), "-%d* +%d*",
+           (int)lroundf(LeanAngleMeter::maxLeftLean),
+           (int)lroundf(LeanAngleMeter::maxRightLean));
+  printCentered(maxLStr, 90, 282, 1, C_WHITE);
+
+  // ---- 右侧数据列 (X = 390) ----
+  printCentered("ROT D/S", 390, 214, 1, 0x9CD3);
+  char rotStr[16];
+  snprintf(rotStr, sizeof(rotStr), "%d", (int)lroundf(fabsf(LeanAngleMeter::rollRate)));
+  printCentered(rotStr, 390, 230, 3, C_WHITE);
+
+  printCentered("BATTERY", 390, 268, 1, 0x9CD3);
+  char batStr[16];
+  snprintf(batStr, sizeof(batStr), "%d%%", batPct >= 0 ? batPct : 100);
+  printCentered(batStr, 390, 282, 2, 0x07F3);
+
+  // ---- 中间 2D G-Force 雷达圆盘 (CX = 240, CY = 260) ----
+  const int RADAR_Y = 260;
+  gfx->drawCircle(CX, RADAR_Y, 26, 0x1CE7); // 内圈
+  gfx->drawCircle(CX, RADAR_Y, 54, 0x2CD9); // 外圈
+
+  // 十字十字轴线
+  gfx->drawLine(CX - 62, RADAR_Y, CX + 62, RADAR_Y, 0x2CD9);
+  gfx->drawLine(CX, RADAR_Y - 62, CX, RADAR_Y + 62, 0x2CD9);
+
+  // 45° 放射状微刻度
+  const float diagCos[4] = { 0.7071f, -0.7071f, -0.7071f,  0.7071f };
+  const float diagSin[4] = { 0.7071f,  0.7071f, -0.7071f, -0.7071f };
+  for (int i = 0; i < 4; i++) {
+    gfx->drawLine((int)lroundf(CX + 46 * diagCos[i]), (int)lroundf(RADAR_Y + 46 * diagSin[i]),
+                  (int)lroundf(CX + 58 * diagCos[i]), (int)lroundf(RADAR_Y + 58 * diagSin[i]), 0x2CD9);
+  }
+
+  // 雷达端点标识
+  printCentered("^ Y", CX, 194, 1, 0x07F3);
+  printCentered("2.0G MAX", CX, 322, 1, 0x07F3);
+  printCentered("-X", CX - 68, RADAR_Y - 3, 1, 0x2CD9);
+  printCentered("+X", CX + 68, RADAR_Y - 3, 1, 0x2CD9);
+
+  // 动态光标与矢量线
+  const float MOVE_R = 48.0f;
+  const float MAX_G = 2.0f;
+  float normLong = LeanAngleMeter::gLongitudinal / MAX_G;
+  float normLat  = LeanAngleMeter::gLateral / MAX_G;
+  float dx = normLat * MOVE_R;
+  float dy = -normLong * MOVE_R; // 加速向上(-)，刹车向下(+)
+  float dist = sqrtf(dx * dx + dy * dy);
+  if (dist > MOVE_R) { dx = (dx / dist) * MOVE_R; dy = (dy / dist) * MOVE_R; }
+  int bx = (int)lroundf(CX + dx);
+  int by = (int)lroundf(RADAR_Y + dy);
+
+  // 粉红矢量射线
+  gfx->drawLine(CX, RADAR_Y, bx, by, 0xF955);
+  gfx->drawLine(CX + 1, RADAR_Y, bx + 1, by, 0xF955);
+
+  // 发光青色光标方块
+  gfx->fillRect(bx - 3, by - 3, 7, 7, 0x07F3);
+  gfx->drawPixel(bx, by, C_WHITE);
+
+  // 7. 实时波动心电/波形图 (Waveform Trace)
+  unsigned long now = millis();
+  if (now - lastTracePush >= 40) {
+    lastTracePush = now;
+    gTrace[gTraceIdx] = dispG;
+    gTraceIdx = (gTraceIdx + 1) % 64;
+  }
+
+  const int TRACE_X0 = 112;
+  const int TRACE_BASE_Y = 352;
+  int prevX = TRACE_X0, prevY = TRACE_BASE_Y;
+  for (int i = 0; i < 64; i++) {
+    int idx = (gTraceIdx + i) % 64;
+    int curX = TRACE_X0 + i * 4;
+    int amp = (int)lroundf(gTrace[idx] * 12.0f);
+    if (amp > 16) amp = 16;
+    if (amp < -16) amp = -16;
+    int curY = TRACE_BASE_Y - amp;
+    if (i > 0) {
+      gfx->drawLine(prevX, prevY, curX, curY, 0xF955);
+      gfx->drawLine(prevX, prevY + 1, curX, curY + 1, 0xBA0F);
+    }
+    prevX = curX; prevY = curY;
+  }
+  printCentered("250 SPS LINK", CX, 368, 1, 0x07F3);
+
+  // 8. 底部双赛博按键 (ZERO 与 RESET)
+  const int BTN_Y = 384;
+  const int BTN_W = 125;
+  const int BTN_H = 44;
+  const int B1_X  = CX - 8 - BTN_W; // 107
+  const int B2_X  = CX + 8;         // 248
+
+  bool justCalib = millis() < LeanAngleMeter::calibSuccessUntil;
+  if (justCalib) {
+    gfx->fillRoundRect(B1_X, BTN_Y, BTN_W, BTN_H, 10, 0x07E0);
+    printCentered("CALIBRATED", B1_X + BTN_W / 2, BTN_Y + 14, 2, C_BLACK);
+  } else {
+    gfx->fillRoundRect(B1_X, BTN_Y, BTN_W, BTN_H, 10, 0x094F); // 深海军蓝
+    gfx->drawRoundRect(B1_X, BTN_Y, BTN_W, BTN_H, 10, 0x07F3); // 霓虹青边框
+    gfx->drawRoundRect(B1_X + 1, BTN_Y + 1, BTN_W - 2, BTN_H - 2, 9, 0x07F3);
+    printCentered("ZERO", B1_X + BTN_W / 2, BTN_Y + 9, 2, 0x07F3);
+    printCentered("HOLD 1.5S", B1_X + BTN_W / 2, BTN_Y + 28, 1, 0x632C);
+  }
+
+  // 右侧 RESET 按钮
+  gfx->fillRoundRect(B2_X, BTN_Y, BTN_W, BTN_H, 10, 0x2805); // 深暗紫底色
+  gfx->drawRoundRect(B2_X, BTN_Y, BTN_W, BTN_H, 10, 0xF955); // 霓虹粉红边框
+  gfx->drawRoundRect(B2_X + 1, BTN_Y + 1, BTN_W - 2, BTN_H - 2, 9, 0xF955);
+  printCentered("RESET", B2_X + BTN_W / 2, BTN_Y + 9, 2, 0xF955);
+  printCentered("PEAK / TRACE", B2_X + BTN_W / 2, BTN_Y + 28, 1, 0x9CD3);
+
+  // 9. 底部页面圆点
+  drawPageDots();
+  needFlush = true;
+}
+
+void leanMeterTap(int x, int y) {
+  if (dragging || page != 3 || callOn || pairOn) return;
+  float dx = x - CX, dy = y - CX;
+  touchVectorToCanvas(dx, dy);
+  x = (int)lroundf(CX + dx); y = (int)lroundf(CX + dy);
+
+  static unsigned long lastTapAt = 0;
+  unsigned long now = millis();
+  bool isResetBtn = (x >= 245 && x <= 390 && y >= 380 && y <= 435);
+  bool isDouble = (now - lastTapAt < 400);
+  lastTapAt = now;
+
+  // 点击右侧 RESET 按钮或双击任意位置：清空极值与历史波形
+  if (isResetBtn || isDouble) {
+    LeanAngleMeter::resetStats();
+    memset(gTrace, 0, sizeof(gTrace));
+    #ifdef M5PM1_ADDR
+    M5PM1.setVibration(80);
+    #endif
+    leanDirty = true;
+  }
+}
+
 // 拖动状态
 bool dragging = false;
 int dragTarget = 0, dragSign = 1;
@@ -2879,6 +3229,7 @@ void renderPage(int p) {
   page = p; sliding = false;
   if (p == 2) drawMusic();
   else if (p == 1) drawWeather();
+  else if (p == 3) drawLeanMeter();
   else if (inNav) drawNavFrame();
   else drawWaiting(bleConnected ? WAIT_READY : WAIT_NOLINK);
   page = keep; sliding = ks;
@@ -2939,7 +3290,6 @@ void slideCompose(int p) {
         if (b > a) memcpy(row + a, n + (a - (W - p)), (b - a) * 2);
         for (int x = xa; x < min(W - p, xb); x++) row[x] = colK[x] >= 32 ? o[x + q] : dim565(o[x + q], colK[x]);
       }
-      // 新页面前沿一道细亮边，看得出是一张“卡片”盖过来
       if (p > 1 && p < W - 1) {
         int ex = dragSign > 0 ? p - 1 : W - p;
         if (ex >= xa && ex < xb) row[ex] = 0x4A69;
@@ -2957,7 +3307,7 @@ void slideCompose(int p) {
       if (isNew) {
         int sy = dragSign > 0 ? y + (H - p) : y - (H - p);
         memcpy(row + xa, slideNew + (size_t)sy * W + xa, (xb - xa) * 2);
-        int edge = dragSign > 0 ? p - 1 : H - p;                // 前沿细亮边
+        int edge = dragSign > 0 ? p - 1 : H - p;
         if (p > 1 && p < H - 1 && (y == edge || y == edge + (dragSign > 0 ? -1 : 1))) {
           uint16_t ec = y == edge ? 0x4A69 : 0x2945;
           for (int x = xa; x < xb; x++) row[x] = ec;
@@ -2972,7 +3322,7 @@ void slideCompose(int p) {
       }
     }
   }
-  flushAsync();                                         // 两块画布轮流：推这一帧的同时画下一帧
+  flushAsync();
   needFlush = false; frameIsMap = false;
 }
 
@@ -2991,6 +3341,9 @@ void slideCommit() {
     onWaitScreen = false;
     wxDirty = false;
     if (!wxHave || millis() - wxAt > 15UL * 60 * 1000) { pendingEvt = "T,W"; wxAskAt = millis(); }
+  } else if (page == 3) {
+    onWaitScreen = false;
+    leanDirty = true;
   } else {
     if (inNav) navDirty = true;
     else { riderPrevF = -1; riderPrevZ = -2; catForce = true; }
@@ -3003,6 +3356,7 @@ void slideCancel() {
   renderPage(page);
   if (page == 2) musicDirty = true;
   else if (page == 1) wxDirty = false;
+  else if (page == 3) leanDirty = true;
   else if (inNav) navDirty = true;
   else { onWaitScreen = true; catForce = true; }
   needFlush = true;
@@ -3021,7 +3375,6 @@ void slideAnimate(float p0, float p1, int ms) {
 }
 
 // 触摸向量统一换算：先修正芯片坐标的镜像，再按刷屏的逆旋转映射到画布。
-// 位移和相对屏幕中心的点都使用这一个函数，避免旋转后点按与手势方向不一致。
 void touchVectorToCanvas(float &dx, float &dy) {
   if (TOUCH_FLIP_X) dx = -dx;
   if (TOUCH_FLIP_Y) dy = -dy;
@@ -3045,8 +3398,13 @@ void dragMove(int dx, int dy, unsigned long now) {
     dragSign = d > 0 ? 1 : -1;
     if (page == 2) { if (!dragHoriz || dragSign > 0) return; dragTarget = 0; }
     else if (page == 1) dragTarget = 0;
+    else if (page == 3) {
+      // 倾角仪表在主界面下方：如果垂直向下滑动 (dy > 0, dragSign > 0)，返回主页 0
+      if (dragHoriz || dragSign < 0) return;
+      dragTarget = 0;
+    }
     else if (dragHoriz) dragTarget = dragSign < 0 ? 1 : 2;
-    else dragTarget = 1;
+    else dragTarget = dragSign < 0 ? 3 : 1; // 手指上滑 dy < 0 进入 page 3(倾角)，下滑 dy > 0 进入 page 1(天气)
     if (!slidePrepare(dragTarget)) return;
     dragging = true;
     dragP = 0; dragV = 0; dragT = now;
@@ -3077,7 +3435,7 @@ void dragEnd() {
 void dragAbort() {
   if (!dragging) return;
   sliding = false; dragging = false;
-  if (page == 2) musicDirty = true; else if (page == 1) wxDirty = true; else if (inNav) navDirty = true;
+  if (page == 2) musicDirty = true; else if (page == 1) wxDirty = true; else if (page == 3) leanDirty = true; else if (inNav) navDirty = true;
 }
 
 // 将触摸点换算到画布坐标，按钮使用较大的点按范围。
@@ -3154,6 +3512,18 @@ void weatherTick() {
   // 还没数据或数据旧了：30 秒再要一次
   if (bleConnected && (!wxHave || now - wxAt > 15UL * 60 * 1000) && now - wxAskAt > 30000) { pendingEvt = "T,W"; wxAskAt = now; }
   if (wxDirty) { wxDirty = false; drawWeather(); }
+}
+
+// 每圈调用：倾角与 G 值刷新
+void leanTick() {
+  LeanAngleMeter::update();
+  if (page != 3 || callOn || pairOn || sliding) return;
+  static unsigned long lastLeanDraw = 0;
+  if (millis() - lastLeanDraw >= 33 || leanDirty) {
+    lastLeanDraw = millis();
+    leanDirty = false;
+    drawLeanMeter();
+  }
 }
 
 void drawStaleOverlay() {
@@ -9266,7 +9636,15 @@ void handleText(const String &m) {
   if (m == "#o") { ghostN = 0; navDirty = true; return; }   // v4.4 不显示原路线
   if (m == "#WXRESET") { wxHave = false; wxExtra = false; wxDetail = 0; wxDirty = true; return; }
   if (m.startsWith("#WX,")) { parseWeatherExtra(m); return; }
-  if (m.startsWith("#W,")) { parseWeather(m); return; }   // v5.3 天气
+  if (m.startsWith("#TIME,")) {
+    time_t ep = (time_t)strtoul(m.c_str() + 6, NULL, 10);
+    if (ep > 1700000000) {
+      struct timeval tv = { .tv_sec = ep, .tv_usec = 0 };
+      settimeofday(&tv, NULL);
+      RtcRX8130::syncFromSystemTime();
+    }
+    return;
+  }
   if (m.startsWith("#i,")) {                             // v5.1 来电："#i,1,号码" / "#i,0"
     bool on = m.charAt(3) == '1';
     if (on) {
@@ -9401,6 +9779,9 @@ void setup() {
                 (int)esp_sleep_get_wakeup_cause());
   Wire.begin(IIC_SDA, IIC_SCL);
   StopWatchBoard::init();   // StopWatch：M5IOE1 上电（屏电源/OLED复位/触摸复位），必须先于 touchInit/gfx->begin
+  RtcRX8130::begin();
+  RtcRX8130::syncToSystemTime();
+  LeanAngleMeter::begin();
   touchInit();                                         // v5.2 触摸屏
   batInit();                                           // v6.8 电源芯片（电量）
   pinMode(BTN_A, INPUT_PULLUP);                        // StopWatch：用户按键 A/B（上拉、按下为低）
@@ -9668,6 +10049,7 @@ void loop() {
     pairOn = false; pairDone = false;
     if (page == 2) musicDirty = true;
     else if (page == 1) wxDirty = true;
+    else if (page == 3) leanDirty = true;
     else if (inNav) navDirty = true;
     else drawWaiting(conn ? WAIT_READY : WAIT_NOLINK);
   }
@@ -9683,6 +10065,7 @@ void loop() {
     wasCall = false;
     if (page == 2) musicDirty = true;
     else if (page == 1) wxDirty = true;
+    else if (page == 3) leanDirty = true;
     else if (inNav) navDirty = true;
     else drawWaiting(conn ? WAIT_READY : WAIT_NOLINK);
   }
@@ -9702,6 +10085,7 @@ void loop() {
     if (!callOn && !pairOn) {
       if (page == 2) musicDirty = true;
       else if (page == 1) wxDirty = true;
+      else if (page == 3) leanDirty = true;
       else if (inNav) navDirty = true;
       else drawWaiting(conn ? WAIT_READY : WAIT_NOLINK);
     }
@@ -9709,6 +10093,7 @@ void loop() {
 
   musicTick();
   weatherTick();                                       // v5.3 天气页
+  leanTick();                                          // StopWatch：倾角与 G 值仪表页
   if (inNav && navDirty && !fxOn && !callOn && !pairOn && page == 0 && !sliding) {
     drawNavFrame();
     navDirty = false;
