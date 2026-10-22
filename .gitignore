@@ -45,3 +45,6 @@ compile_commands.json
 
 # Release outputs
 release/
+
+# IDE
+.idea/
