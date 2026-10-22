@@ -232,7 +232,7 @@
 //   U,1                   v6.5 这台手机通过了配对验证（连上后发 3 次）
 //   V,电量,充电,USB,mV    v6.8 圆屏电池（电量 -1 = 没接电池）
 
-#define FW_VERSION "v7.12.1"
+#define FW_VERSION "v7.12.3"
 
 // 调试时想在串口监视器里看到每条收到的文字指令，把 0 改成 1
 #define DEBUG_SERIAL 0
@@ -9503,6 +9503,11 @@ void idlePowerOffShutdown() {
   if (displayReady) {
     panel->setBrightness(0);
     panel->displayOff();
+  }
+  // StopWatch: 彻底切断 AMOLED 屏 3.3V 供电 (L3B / M5IOE1 PIN_8)
+  // 消除待机微安级以外的显示屏静态漏电，大幅延长关机休眠续航
+  if (StopWatchBoard::ok) {
+    StopWatchBoard::ioe.digitalWrite(M5IOE1_PIN_8, 0);
   }
   // Check the chip ID, rather than writing to an unknown device at address 0x34.
   const int chip = pmuRead(0x03);
