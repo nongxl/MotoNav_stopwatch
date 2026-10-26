@@ -27,6 +27,9 @@ import android.widget.SeekBar
 import android.widget.TextView
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
+import androidx.core.view.ViewCompat
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
 
 /**
  * MotoNav 手机 App
@@ -949,12 +952,41 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun showThemePicker() {
-        val dlg = android.app.Dialog(this, android.R.style.Theme_DeviceDefault_NoActionBar)
+        val dlg = android.app.Dialog(this, if (NavStyle.night) android.R.style.Theme_DeviceDefault_NoActionBar else android.R.style.Theme_DeviceDefault_Light_NoActionBar)
+        // 读取当前窗口系统栏与显示挖孔尺寸，初始化安全留白（避开状态栏和底部三大金刚键）
+        val actBars = ViewCompat.getRootWindowInsets(window.decorView)?.getInsets(
+            WindowInsetsCompat.Type.systemBars() or WindowInsetsCompat.Type.displayCutout()
+        )
+        val initTop = actBars?.top ?: 0
+        val initBottom = actBars?.bottom ?: 0
+        val initLeft = actBars?.left ?: 0
+        val initRight = actBars?.right ?: 0
+
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setBackgroundColor(BG)
-            setPadding(dp(16), dp(20), dp(16), dp(12))
+            setPadding(
+                dp(16) + initLeft,
+                maxOf(dp(20), initTop + dp(12)),
+                dp(16) + initRight,
+                maxOf(dp(12), initBottom + dp(12))
+            )
         }
+
+        // 动态监听 WindowInsets 变化，自适应三键导航栏高度及横竖屏切换
+        ViewCompat.setOnApplyWindowInsetsListener(root) { view, insets ->
+            val bars = insets.getInsets(
+                WindowInsetsCompat.Type.systemBars() or WindowInsetsCompat.Type.displayCutout()
+            )
+            view.setPadding(
+                dp(16) + bars.left,
+                maxOf(dp(20), bars.top + dp(12)),
+                dp(16) + bars.right,
+                maxOf(dp(12), bars.bottom + dp(12))
+            )
+            insets
+        }
+
         // 标题
         root.addView(label("小地图风格", 22f, TEXT, bold = true))
         root.addView(label("四种独立风格。下图为示意，原版保留高德默认颜色和标注；圆屏需更新配套固件。", 12f, SUB).apply {
@@ -967,7 +999,7 @@ class MainActivity : AppCompatActivity() {
         val cards = HashMap<Int, LinearLayout>()
         fun styleCard(c: LinearLayout, selected: Boolean) {
             c.background = GradientDrawable().apply {
-                setColor(if (selected) Color.parseColor("#2A1830") else CARD)
+                setColor(if (selected) (if (NavStyle.night) Color.parseColor("#2A1830") else NavStyle.TABSEL) else CARD)
                 cornerRadius = dpf(18f)
                 setStroke(if (selected) dp(2) else dp(1), if (selected) PINK else STROKE)
             }
@@ -1016,8 +1048,16 @@ class MainActivity : AppCompatActivity() {
         root.addView(pillButton("完成", PINK) { dlg.dismiss() },
             LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(46)).apply { topMargin = dp(10) })
         dlg.setContentView(root)
-        dlg.window?.setLayout(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
+        dlg.window?.let { win ->
+            win.setLayout(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
+            WindowCompat.setDecorFitsSystemWindows(win, false)
+            WindowCompat.getInsetsController(win, root).apply {
+                isAppearanceLightStatusBars = !NavStyle.night
+                isAppearanceLightNavigationBars = !NavStyle.night
+            }
+        }
         dlg.show()
+        ViewCompat.requestApplyInsets(root)
     }
 
     // ---- v4.1 推荐的免费语音引擎 ----
