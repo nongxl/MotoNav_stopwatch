@@ -273,6 +273,13 @@
 #include <miniz.h>            // 罪恶都市轮廓：仅接收地图时解压
 #include "BootAnimation.h"
 #include "DragonRadar.h"
+#include "TurnRingMotion.h"
+#include "TrafficLightLab.h"
+TurnRingMotion turnRingMotion;
+uint32_t ringAnimationDrawAt = 0;
+TrafficLightFrame trafficLightFrame;
+TrafficLightLab trafficLightLab;
+uint32_t trafficLightPreviewUntil = 0;
 int bootBrand = 0;
 String pendingBootAck;
 #include <esp_mac.h>           // v7.0 读蓝牙地址，拼蓝牙名
@@ -9383,6 +9390,7 @@ void drawMapFrame() {
   hasCam = saveCam; tripOn = saveTrip;
   drawNavHints(300);                                    // v5.0 重新规划中 / 更快路线 / GPS 信号弱
   drawBattery(CX - 16, 18, true);                         // v6.8 电量（车速上方）；v7.2 带黑底
+  drawTrafficLightLab(millis());                        // 红绿灯竖排卡片
   profMark(10);
   // v2.9 小地图里不画顶部的蓝牙小圆点（会和 N 标记重叠；能收到地图就说明连着）
   needFlush = true;
@@ -9413,19 +9421,65 @@ void updateStats() {
 void updateRingTarget() {
   bool hasRing = (navDir != "S") && navDist <= STAGE_FAR_M;
   float target = hasRing ? (float)(STAGE_FAR_M - navDist) / STAGE_FAR_M : 0;
-  if (navDir != ringDir || !ringActive || !hasRing) ringShown = target;  // 换路口/刚进入：直接到位
+  const uint32_t now = millis();
+  turnRingMotion.update(ringShown, target, navDir != ringDir || !ringActive || !hasRing, now);
+  ringShown = turnRingMotion.value(now);
   ringTarget = target;
   ringActive = hasRing;
   ringDir = navDir;
 }
 
 void animateRing() {
-  if (!inNav || !ringActive || staleShown) return;
-  float diff = ringTarget - ringShown;
-  if (fabsf(diff) < 0.0005f) return;
-  ringShown += diff * 0.35f;
-  if (fabsf(ringTarget - ringShown) < 0.002f) ringShown = ringTarget;
+  if (!inNav || !ringActive || staleShown || rerouteAt) return;
+  const uint32_t now = millis();
+  if (now - ringAnimationDrawAt < 33) return;
+  ringAnimationDrawAt = now;
+  const float next = turnRingMotion.value(now);
+  if (next == ringShown) return;
+  ringShown = next;
   navDirty = true;
+}
+
+// 右侧竖排路口红绿灯绘制（适配 466x466 AMOLED 圆屏边缘）
+void drawTrafficLightLab(uint32_t now) {
+  const bool preview = trafficLightPreviewUntil && (int32_t)(trafficLightPreviewUntil - now) > 0;
+  const bool pending = !preview && trafficLightFrame.valid(now) && !trafficLightLab.valid(now);
+  if (!preview && !pending && !trafficLightLab.valid(now)) return;
+  const bool other = !preview && trafficLightLab.phases[3].valid(now);
+  const int rows = other ? 4 : 3, x = CX + 88, y = 140, w = 92, h = 38, gap = 3;
+  static int previousRows = 0;
+  if (previousRows > rows) navDirty = true;
+  previousRows = rows;
+  gfx->fillRoundRect(x - 2, y - 13, w + 4, rows * (h + gap) + 11, 8, 0x1082);
+  printCentered(preview ? String("PREVIEW") : String("LIGHTS"), x + w / 2, y - 10, 1, C_WHITE);
+  uint32_t signature = preview ? 0xFFFF : 0;
+  for (int i = 0; i < rows; ++i) {
+    const TrafficLightPhase &p = trafficLightLab.phases[i];
+    const bool present = !preview && p.valid(now);
+    const bool known = present && (p.status == 1 || p.status == 4 || p.status == -1);
+    const bool rightMissing = !preview && !pending && i == 2 && !known;
+    const uint16_t color = !known ? C_GREY : p.status == 1 ? C_RED : p.status == 4 ? C_GREEN : 0xFFE0;
+    const int ry = y + i * (h + gap);
+    gfx->fillRoundRect(x, ry, w, h, 6, 0x1082);
+    gfx->drawRoundRect(x, ry, w, h, 6, color);
+    if (i == 1) {
+      gfx->fillRect(x + 12, ry + 15, 4, 12, color);
+      gfx->fillTriangle(x + 14, ry + 6, x + 6, ry + 18, x + 22, ry + 18, color);
+    } else if (i == 0) {
+      gfx->fillRect(x + 18, ry + 14, 4, 13, color); gfx->fillRect(x + 9, ry + 14, 13, 4, color);
+      gfx->fillTriangle(x + 3, ry + 16, x + 12, ry + 8, x + 12, ry + 24, color);
+    } else if (i == 2) {
+      gfx->fillRect(x + 8, ry + 14, 4, 13, color); gfx->fillRect(x + 8, ry + 14, 13, 4, color);
+      gfx->fillTriangle(x + 26, ry + 16, x + 17, ry + 8, x + 17, ry + 24, color);
+    } else gfx->fillCircle(x + 14, ry + 16, 5, color);
+    unsigned seconds = present ? p.seconds(now) : 0;
+    if (rightMissing) gfx->fillCircle(x + 60, ry + 14, 9, C_GREY);
+    else printCentered(known && seconds ? String(seconds) : String("--"), x + 60, ry + 3, 3, color);
+    const char *label = i == 0 ? "LEFT" : i == 1 ? "STRAIGHT" : i == 2 ? "RIGHT" : "OTHER";
+    printCentered(String(label), x + 60, ry + 27, 1, C_WHITE);
+    if (present && p.wait > 0) printCentered(String("W") + p.wait, x + 14, ry + 28, 1, C_GREY);
+    signature = signature * 31 + (present ? ((p.status + 2) * 1000 + seconds) : 0);
+  }
 }
 
 // 按当前全部状态画一整帧导航画面
@@ -9446,7 +9500,7 @@ void drawNavFrame() {
   gfx->fillScreen(C_BLACK);
   bool isS = (navDir == "S");
   bool isFar = !isS && navDist > STAGE_FAR_M;
-  bool lanes = laneN > 0;
+  bool lanes = laneN > 0 && ringActive;                 // 跟随转弯倒计时开始显示
   bool over = hasCam && camLimit > 0 && speedKmh > camLimit;
   float laneK = lanes ? 0.85f : 1.0f;
   float iconCy = lanes ? ICON_CY_LANE : ICON_CY;
@@ -9477,6 +9531,7 @@ void drawNavFrame() {
   drawTextImg(0, lanes ? ROAD_Y_LANE : ROAD_Y, 0xDD);
   drawTextImg(1, BOTTOM_Y, 0x99);                      // v1.7.3：常驻显示
   drawNavHints(128);                                    // v5.0
+  drawTrafficLightLab(millis());                        // 红绿灯竖排卡片
   needFlush = true;
 }
 
@@ -9493,6 +9548,7 @@ void resetNavState() {
   hasCam = false;
   laneN = 0;
   ringActive = false; ringDir = "";
+  trafficLightLab.clear(); trafficLightFrame.clear();
   for (int i = 0; i < 3; i++) { imgs[i].showW = 0; imgs[i].showH = 0; imgs[i].recvId = -1; }   // v5.3 天气栏 3、4 留着
 }
 
@@ -9760,6 +9816,20 @@ void handleText(const String &m) {
   if (m.startsWith("#g")) {                              // v3.1 前方红绿灯距离；只有 #g 表示隐藏
     int d = -1;
     lightDist = (sscanf(m.c_str(), "#g,%d", &d) == 1) ? d : -1;
+    navDirty = true;
+    return;
+  }
+  if (m.startsWith("#TLS,") || m.startsWith("#TL,")) {
+    if (trafficLightLab.receive(m.c_str(), millis())) navDirty = true;
+    return;
+  }
+  if (m.startsWith("#TLA,")) {
+    if (trafficLightFrame.receive(m.c_str(), millis())) navDirty = true;
+    return;
+  }
+  if (m == "#TLP,1") {
+    trafficLightPreviewUntil = millis() + 5000;
+    Serial.println("TL LAYOUT PREVIEW placeholders-only duration=5000");
     navDirty = true;
     return;
   }
