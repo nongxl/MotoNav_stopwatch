@@ -83,7 +83,7 @@ class MainPagesShell(private val activity:AppCompatActivity, saved:Bundle?,
             val selected=i==index;tab.isSelected=selected
             labels[i].setTextColor(if(selected)S.PINK else S.SUB)
             labels[i].typeface=if(selected)S.BOLD else S.MEDIUM
-            indicators[i].background=if(selected)S.round(activity,0xFF351E38.toInt(),14f) else null
+            indicators[i].background=if(selected)S.round(activity,S.TABSEL,14f) else null
             icons[i].active=selected
         }
         onSelected(index)

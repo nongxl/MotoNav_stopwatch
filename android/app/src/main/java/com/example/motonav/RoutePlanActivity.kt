@@ -147,6 +147,7 @@ class RoutePlanActivity : AppCompatActivity() {
 
     @Suppress("DEPRECATION")
     override fun onCreate(savedInstanceState: Bundle?) {
+        NavStyle.updateNight(this)   // v8.3.24-ui.1 白夜模式
         super.onCreate(savedInstanceState)
         supportActionBar?.hide()
         NaviBridge.initPrivacy(this)

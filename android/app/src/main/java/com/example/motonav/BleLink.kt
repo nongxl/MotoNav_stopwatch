@@ -417,15 +417,6 @@ object BleLink {
         }
     }
 
-    private fun markVerified() {
-        if (!verified) {
-            verified = true
-            pairHint = ""
-            gatt?.device?.address?.let { saveLast(it); skipAddr = "" }   // v7.8 记住这块是“我的圆屏”
-            staleCount = 0; needUnbond = false
-            handler.post { resendAll() }             // 验证前发的东西圆屏没收：全部重发
-        }
-    }
 
     private val gattCallback = object : BluetoothGattCallback() {
         override fun onConnectionStateChange(g: BluetoothGatt, st: Int, newState: Int) = onCurrent(g) {
@@ -538,12 +529,30 @@ object BleLink {
             for ((slot, img) in lastImg) enqueueImage(slot, img)
         }
         pump()
+        syncScreenClock(true)              // v8.3.24 连上就自动对时（圆屏待机时钟 + 时间显示用）
         MusicBridge.refresh(true)
         BootBrand.sync()
         MapFeeder.onLinkReady()            // v2.0 地图块和路线重发
     }
 
     private fun maxWrite(): Int = minOf(mtu - 3, MAX_WRITE)
+
+    // ================= 自动对时（v8.3.24 配合固件 v7.12.9-ui 的 #TIME） =================
+
+    private var lastClockSyncAt = 0L
+    private const val CLOCK_SYNC_MS = 60 * 60 * 1000L          // 每小时校准一次
+    private val clockFmt = java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss", java.util.Locale.US)
+
+    /** 把手机时间发给圆屏（24 小时制）。连上强制发一次；之后每小时校准；旧固件不认识就忽略，无副作用。
+     *  send() 会把它记进 lastState，断线重连时随 resendAll() 自动补发最新时间。 */
+    fun syncScreenClock(force: Boolean = false) {
+        if (!ready) return
+        val now = now()
+        if (!force && now - lastClockSyncAt < CLOCK_SYNC_MS) return
+        lastClockSyncAt = now
+        val sec = System.currentTimeMillis() / 1000
+        send("#TIME,$sec," + clockFmt.format(java.util.Date()))
+    }
 
     // ================= 心跳 =================
 
@@ -562,6 +571,7 @@ object BleLink {
             if (ready && !verified) { capabilityQuerySent = true; send("#GB?") }
             val idle = synchronized(lock) { queue.isEmpty() && bulkQ.isEmpty() && !writing }
             if (ready && idle && now() - lastWriteAt > HEARTBEAT_MS - 500) send("P")
+            syncScreenClock(false)                 // 每小时校准一次圆屏时钟
             if (auto) handler.postDelayed(this, HEARTBEAT_MS)
         }
     }

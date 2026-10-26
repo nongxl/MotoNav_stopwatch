@@ -145,22 +145,26 @@ import androidx.appcompat.app.AppCompatActivity
  *   v8.2  界面整理：首页顶部一张状态卡（圆屏名字、电量、配对提示，导航 / 巡航中多一行）；巡航改成一行；
  *         设置分成「圆屏显示 / 导航语音 / 圆屏设置 / 地图 Key」四组，可折叠，收起时显示一行当前设置；
  *         调试信息、测试按钮、屏幕速度、地图来源、帧率等挪进「开发者选项」，默认隐藏（连点 5 下版本号打开）
+ *   v8.3.24-ui.1 白夜模式 + 折叠屏 + 自动对时：界面跟随系统深浅色自动切换（夜=罪恶都市夜景，白=浅紫灰 +
+ *         加深品牌色）；Galaxy Z Fold 等折叠屏展开内屏（宽 ≥600dp）首页改双栏（左=圆屏状态/巡航/搜索，
+ *         右=常用目的地/最近去过/出发前准备/骑行轨迹），折叠展开自动重排；连上圆屏自动对时（#TIME，
+ *         配合固件 v7.12.9-ui，与 iOS 0.15.2 相同协议）
  */
-const val APP_VERSION = "v8.3.26"
+const val APP_VERSION = "v8.3.26-ui.1"
 
 class MainActivity : AppCompatActivity() {
-    // ---------------- 配色（罪恶都市夜景：深紫黑底、霓虹粉、青色） ----------------
-    private val BG = Color.parseColor("#0E0A14")
-    private val CARD = Color.parseColor("#1A1424")
-    private val STROKE = Color.parseColor("#2C2338")
-    private val TEXT = Color.parseColor("#F3EEF8")
-    private val SUB = Color.parseColor("#9D93AB")
-    private val PINK = Color.parseColor("#FF4FB4")
-    private val PURPLE = Color.parseColor("#8E5CFF")
-    private val CYAN = Color.parseColor("#43E1F0")
-    private val GREEN = Color.parseColor("#3DDC84")
-    private val AMBER = Color.parseColor("#FFB547")
-    private val RED = Color.parseColor("#FF5A6A")
+    // ---------------- 配色（v8.3.24-ui.1 白夜模式：跟随系统深浅色，取值统一走 NavStyle） ----------------
+    private val BG get() = NavStyle.BG
+    private val CARD get() = NavStyle.CARD_SOLID
+    private val STROKE get() = NavStyle.STROKE
+    private val TEXT get() = NavStyle.TEXT
+    private val SUB get() = NavStyle.SUB
+    private val PINK get() = NavStyle.PINK
+    private val PURPLE get() = NavStyle.PURPLE
+    private val CYAN get() = NavStyle.CYAN
+    private val GREEN get() = NavStyle.GREEN
+    private val AMBER get() = NavStyle.AMBER
+    private val RED get() = NavStyle.RED
 
     private val handler = Handler(Looper.getMainLooper())
     private val refreshers = ArrayList<() -> Unit>()       // 每 0.2 秒刷新一次的界面元素
@@ -174,6 +178,7 @@ class MainActivity : AppCompatActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        NavStyle.updateNight(this)                   // v8.3.24-ui.1 白夜模式：先读系统深浅色再建界面
         CrashLog.install(this)                       // v5.5 闪退记录
         NaviBridge.initPrivacy(this)
         MapFeeder.load(this)
@@ -233,11 +238,29 @@ class MainActivity : AppCompatActivity() {
         }
         when (index) {
             0 -> {
-                content.addView(cruiseCard())
-                content.addView(homeConnection())
-                content.addView(searchCard())
-                content.addView(setupCard())
-                content.addView(rideCard())
+                // v8.3.24-ui.1 折叠屏适配：展开内屏（宽度 ≥600dp）首页改双栏——
+                // 左栏 = 圆屏状态 + 巡航 + 搜索；右栏 = 常用目的地/最近去过 + 出发前准备 + 骑行轨迹
+                if (resources.configuration.screenWidthDp >= 600) {
+                    val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+                    val left = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+                    val right = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+                    left.addView(homeConnection())
+                    left.addView(cruiseCard())
+                    val idleHost = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+                    left.addView(searchCard(idleHost))
+                    right.addView(idleHost)
+                    right.addView(setupCard())
+                    right.addView(rideCard())
+                    row.addView(left, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply { rightMargin = dp(7) })
+                    row.addView(right, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply { leftMargin = dp(7) })
+                    content.addView(row)
+                } else {
+                    content.addView(cruiseCard())
+                    content.addView(homeConnection())
+                    content.addView(searchCard())
+                    content.addView(setupCard())
+                    content.addView(rideCard())
+                }
             }
             1 -> {
                 val summary = label("", 13f, SUB).apply { setPadding(dp(4), 0, 0, dp(14)) }
@@ -357,8 +380,9 @@ class MainActivity : AppCompatActivity() {
     private val homeSearchRun = Runnable { homeSearch(homeKw) }
     private var refreshHomeIdle: (() -> Unit)? = null
 
-    /** 去哪儿：搜索框 + 搜索按钮，下面是搜索结果；没输入时显示“粘贴高德分享的路线”和“最近去过” */
-    private fun searchCard(): View {
+    /** 去哪儿：搜索框 + 搜索按钮，下面是搜索结果；没输入时显示“粘贴高德分享的路线”和“最近去过”。
+     *  v8.3.24-ui.1 折叠屏宽屏：idleHost 非空时，“常用目的地/最近去过”块放到右栏那张卡里。 */
+    private fun searchCard(idleHost: LinearLayout? = null): View {
         val card = card()
         card.addView(label("摩托车路线规划（实验）", 18f, CYAN, bold = true).apply {
             minHeight = dp(52); gravity = Gravity.CENTER_VERTICAL
@@ -394,8 +418,15 @@ class MainActivity : AppCompatActivity() {
         val results = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         card.addView(results, lpMatch(top = 6))
 
-        // 没输入时：粘贴分享路线 + 最近去过
+        // 没输入时：粘贴分享路线 + 最近去过（宽屏时这块放右栏，不进本卡）
         val idle = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        if (idleHost == null) card.addView(idle) else {
+            val idleCard = card()
+            idleCard.addView(idle)
+            val wrap = wrapMargin(idleCard)
+            idleHost.addView(wrap)
+            homeIdleWrap = wrap
+        }
         idle.addView(label("📋  粘贴高德分享的路线", 16f, AMBER, bold = true).apply {
             setPadding(0, dp(12), 0, dp(4))
             setOnClickListener { pasteShareFromHome() }
@@ -403,7 +434,6 @@ class MainActivity : AppCompatActivity() {
         idle.addView(label("在高德里规划好路线 → 分享 → 选 MotoNav；或者复制链接后点上面这行", 12f, SUB).apply { setPadding(0, 0, 0, dp(6)) })
         val hist = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         idle.addView(hist)
-        card.addView(idle)
 
         fun showHistory() {
             hist.removeAllViews()
@@ -438,7 +468,7 @@ class MainActivity : AppCompatActivity() {
                 homeKw = e?.toString()?.trim().orEmpty()
                 handler.removeCallbacks(homeSearchRun)
                 // v6.8 不再边打边搜：打完点“搜索”或按回车才搜；清空输入框时回到“最近去过”
-                if (homeKw.isEmpty()) { results.removeAllViews(); homeTips = emptyList(); homeTipsKw = ""; idle.visibility = View.VISIBLE }
+                if (homeKw.isEmpty()) { results.removeAllViews(); homeTips = emptyList(); homeTipsKw = ""; idle.visibility = View.VISIBLE; homeIdleWrap?.visibility = View.VISIBLE }
             }
         })
         input.setOnEditorActionListener { _, _, _ ->
@@ -452,6 +482,7 @@ class MainActivity : AppCompatActivity() {
 
     private var homeResults: LinearLayout? = null
     private var homeIdle: View? = null
+    private var homeIdleWrap: View? = null          // v8.3.24-ui.1 宽屏右栏里 idle 块的外层卡片，搜索时整体隐藏
     private var homeTips: List<com.amap.api.services.help.Tip> = emptyList()
     private var homeTipsKw = ""
 
@@ -482,6 +513,7 @@ class MainActivity : AppCompatActivity() {
         if (homeKw.isEmpty()) { toast("先输入要去的地方"); return }
         hideKeyboard()
         homeIdle?.visibility = View.GONE
+        homeIdleWrap?.visibility = View.GONE
         homeResults?.let { it.removeAllViews(); it.addView(label("搜索中…", 13f, SUB).apply { setPadding(0, dp(10), 0, 0) }) }
         homeSearch(homeKw)
     }
@@ -542,7 +574,7 @@ class MainActivity : AppCompatActivity() {
         val cm = getSystemService(CLIPBOARD_SERVICE) as android.content.ClipboardManager
         val t = try { cm.primaryClip?.getItemAt(0)?.coerceToText(this)?.toString() } catch (_: Exception) { null }
         if (AmapShare.findUrl(t) == null) {
-            android.app.AlertDialog.Builder(this, android.app.AlertDialog.THEME_DEVICE_DEFAULT_DARK)
+            android.app.AlertDialog.Builder(this, NavStyle.dialogTheme())
                 .setMessage("剪贴板里没有高德的分享链接。\n\n在高德 App 里规划好路线 → 分享 → 复制链接（或直接分享给 MotoNav），再回来点这里。")
                 .setPositiveButton("知道了", null).show()
             return
@@ -589,7 +621,7 @@ class MainActivity : AppCompatActivity() {
         refreshers += {
             val on = NaviBridge.cruising
             cruise.text = if (on) "结束" else "开始"
-            (cruise.background as? GradientDrawable)?.setColor(if (on) Color.parseColor("#2A7F88") else Color.parseColor("#36B8C6"))
+            (cruise.background as? GradientDrawable)?.setColor(if (on) NavStyle.CYAN_BTN_OFF else NavStyle.CYAN_BTN)
         }
         return wrapMargin(card)
     }
@@ -839,7 +871,7 @@ class MainActivity : AppCompatActivity() {
         sys.addView(settingRow("语音引擎", null, textLink("更换") {
             val list = NaviVoice.engines()
             if (list.isEmpty()) { toast("手机上没找到语音引擎，请先到应用商店安装一个"); return@textLink }
-            android.app.AlertDialog.Builder(this, android.app.AlertDialog.THEME_DEVICE_DEFAULT_DARK)
+            android.app.AlertDialog.Builder(this, NavStyle.dialogTheme())
                 .setTitle("选择语音引擎")
                 .setItems(list.map { it.second }.toTypedArray()) { _, i -> NaviVoice.setEngine(list[i].first) { toast("已切换：${list[i].second}") } }
                 .show()
@@ -850,7 +882,7 @@ class MainActivity : AppCompatActivity() {
             val vs = NaviVoice.zhVoices()
             if (vs.isEmpty()) { toast("这个引擎里没有中文声音（或还在准备中），换个引擎试试"); return@textLink }
             val names = arrayOf("引擎默认") + vs.map { NaviVoice.voiceLabel(it) }.toTypedArray()
-            android.app.AlertDialog.Builder(this, android.app.AlertDialog.THEME_DEVICE_DEFAULT_DARK)
+            android.app.AlertDialog.Builder(this, NavStyle.dialogTheme())
                 .setTitle("选择声音（${vs.size} 个中文声音）")
                 .setItems(names) { _, i -> NaviVoice.setVoice(if (i == 0) "" else vs[i - 1].name); NaviVoice.test() }
                 .show()
@@ -1017,7 +1049,7 @@ class MainActivity : AppCompatActivity() {
     private fun screenSection(card: LinearLayout) {
         val bootSub = label("", 12f, SUB)
         card.addView(settingRow("开机动画 · 摩托车品牌", null, textLink("选择") {
-            android.app.AlertDialog.Builder(this, android.app.AlertDialog.THEME_DEVICE_DEFAULT_DARK)
+            android.app.AlertDialog.Builder(this, NavStyle.dialogTheme())
                 .setTitle("选择圆屏开机品牌")
                 .setSingleChoiceItems(BootBrand.labels, BootBrand.selected) { dialog, which ->
                     BootBrand.select(which)
@@ -1107,7 +1139,7 @@ class MainActivity : AppCompatActivity() {
             "圆屏只听配对过的手机。加新手机：重启圆屏，2 分钟内连接并输入配对码",
             textLink("忘掉其他手机") {
                 if (!BleLink.verified) { toast("先连上圆屏并通过验证再点"); return@textLink }
-                android.app.AlertDialog.Builder(this, android.app.AlertDialog.THEME_DEVICE_DEFAULT_DARK)
+                android.app.AlertDialog.Builder(this, NavStyle.dialogTheme())
                     .setTitle("让圆屏忘掉其他手机？")
                     .setMessage("除了现在连着的这台，圆屏记住的其他手机都会被忘掉，它们以后要重新配对。\n\n手机丢了、换了手机时用新手机点一下。")
                     .setPositiveButton("忘掉") { _, _ -> BleLink.forgetOthers(); toast("已让圆屏忘掉其他手机") }
@@ -1302,7 +1334,7 @@ class MainActivity : AppCompatActivity() {
         val amapIn = input("粘贴高德 key", Keys.userAmap(this))
         box.addView(amapIn, lpMatch(top = 6, bottom = 14))
 
-        android.app.AlertDialog.Builder(this, android.app.AlertDialog.THEME_DEVICE_DEFAULT_DARK)
+        android.app.AlertDialog.Builder(this, NavStyle.dialogTheme())
             .setTitle(if (first) "填写地图 key" else "Key 设置")
             .setView(ScrollView(this).apply { addView(box) })
             .setNegativeButton(if (first) "稍后再填" else "取消", null)
@@ -1311,7 +1343,7 @@ class MainActivity : AppCompatActivity() {
                 val needRestart = Keys.save(this, a)
                 MapFeeder.onKeysChanged()
                 if (needRestart && Keys.hasAmap(this)) {
-                    android.app.AlertDialog.Builder(this, android.app.AlertDialog.THEME_DEVICE_DEFAULT_DARK)
+                    android.app.AlertDialog.Builder(this, NavStyle.dialogTheme())
                         .setTitle("高德 key 已保存")
                         .setMessage("要重新打开一次 App，导航、搜索才会用上新的 key。")
                         .setPositiveButton("现在重启") { _, _ -> Keys.restartApp(this) }

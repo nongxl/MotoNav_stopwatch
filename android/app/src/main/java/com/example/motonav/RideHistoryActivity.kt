@@ -49,6 +49,7 @@ class RideHistoryActivity : AppCompatActivity() {
         override fun run() { status.text=RideRecorder.status(); handler.postDelayed(this,1000) }
     }
     override fun onCreate(savedInstanceState: Bundle?) {
+        NavStyle.updateNight(this)   // v8.3.24-ui.1 白夜模式
         super.onCreate(savedInstanceState)
         exportId=savedInstanceState?.getString("export_id")
         val content = LinearLayout(this).apply { orientation=LinearLayout.VERTICAL; setPadding(dp(18),dp(12),dp(18),dp(24)) }

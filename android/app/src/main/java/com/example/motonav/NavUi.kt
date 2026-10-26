@@ -25,19 +25,41 @@ import kotlin.math.sin
  * - LaneView：车道指示
  */
 object NavStyle {
-    val BG = Color.parseColor("#0E0A14")
-    val CARD = Color.parseColor("#F21A1424")        // 浮在地图上的卡片（略透明）
-    val CARD_SOLID = Color.parseColor("#1A1424")
-    val CARD2 = Color.parseColor("#251C33")
-    val STROKE = Color.parseColor("#3A2E4C")
-    val TEXT = Color.parseColor("#F3EEF8")
-    val SUB = Color.parseColor("#A79DB6")
-    val PINK = Color.parseColor("#FF4FB4")
-    val PURPLE = Color.parseColor("#8E5CFF")
-    val CYAN = Color.parseColor("#43E1F0")
-    val AMBER = Color.parseColor("#FFB547")
-    val RED = Color.parseColor("#FF4D5E")
-    val GREEN = Color.parseColor("#3DDC84")
+    // ---------------- 白夜模式（v8.3.24-ui.1） ----------------
+    // 跟随系统深浅色自动切换：App 启动 / 界面重建时 updateNight() 刷新；
+    // 所有颜色改成 get() 动态取值，界面代码不用改。
+    var night = true
+
+    /** 从系统配置读当前是否深色模式（每个 Activity onCreate 时调一次） */
+    fun updateNight(ctx: Context) {
+        night = (ctx.resources.configuration.uiMode and
+                 android.content.res.Configuration.UI_MODE_NIGHT_MASK) == android.content.res.Configuration.UI_MODE_NIGHT_YES
+    }
+
+    // 夜：罪恶都市夜景（原配色）；白：浅紫灰底 + 加深的品牌色（保证浅底对比度）
+    val BG get() = if (night) Color.parseColor("#0E0A14") else Color.parseColor("#F4F1F8")
+    val CARD get() = if (night) Color.parseColor("#F21A1424") else Color.parseColor("#F2FFFFFF")   // 浮在地图上的卡片（略透明）
+    val CARD_SOLID get() = if (night) Color.parseColor("#1A1424") else Color.parseColor("#FFFFFF")
+    val CARD2 get() = if (night) Color.parseColor("#251C33") else Color.parseColor("#EEE8F6")
+    val STROKE get() = if (night) Color.parseColor("#3A2E4C") else Color.parseColor("#E2DBEE")
+    val TEXT get() = if (night) Color.parseColor("#F3EEF8") else Color.parseColor("#241C33")
+    val SUB get() = if (night) Color.parseColor("#A79DB6") else Color.parseColor("#6E6480")
+    val PINK get() = if (night) Color.parseColor("#FF4FB4") else Color.parseColor("#E43D96")
+    val PURPLE get() = if (night) Color.parseColor("#8E5CFF") else Color.parseColor("#7A4BF0")
+    val CYAN get() = if (night) Color.parseColor("#43E1F0") else Color.parseColor("#0E9FB5")
+    val AMBER get() = if (night) Color.parseColor("#FFB547") else Color.parseColor("#C07A00")
+    val RED get() = if (night) Color.parseColor("#FF4D5E") else Color.parseColor("#D94355")
+    val GREEN get() = if (night) Color.parseColor("#3DDC84") else Color.parseColor("#1FA85E")
+
+    // v8.3.24-ui.1 新增：底部 Tab 选中指示条、青色按钮（夜/白两套）
+    val TABSEL get() = if (night) Color.parseColor("#351E38") else Color.parseColor("#F7E3F0")
+    val CYAN_BTN get() = if (night) Color.parseColor("#36B8C6") else Color.parseColor("#22AFC2")
+    val CYAN_BTN_OFF get() = if (night) Color.parseColor("#2A7F88") else Color.parseColor("#1B7E8A")
+
+    /** 对话框主题跟随白夜模式 */
+    fun dialogTheme(): Int =
+        if (night) android.app.AlertDialog.THEME_DEVICE_DEFAULT_DARK
+        else android.app.AlertDialog.THEME_DEVICE_DEFAULT_LIGHT
 
     val NUM: Typeface = Typeface.create("sans-serif-condensed", Typeface.BOLD)
     val BOLD: Typeface = Typeface.create("sans-serif", Typeface.BOLD)

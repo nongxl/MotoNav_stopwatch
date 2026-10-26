@@ -47,6 +47,7 @@ class MotorWebActivity : AppCompatActivity() {
 
     @SuppressLint("SetJavaScriptEnabled")
     override fun onCreate(savedInstanceState: Bundle?) {
+        NavStyle.updateNight(this)   // v8.3.24-ui.1 白夜模式
         super.onCreate(savedInstanceState)
         supportActionBar?.hide()
         val root = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setBackgroundColor(Color.rgb(14,10,20)) }

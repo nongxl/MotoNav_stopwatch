@@ -9840,6 +9840,22 @@ void handleText(const String &m) {
   if (m.startsWith("#W,")) { parseWeather(m); return; }   // v5.3 天气
   if (m.startsWith("#TIME,")) {
     time_t ep = (time_t)strtoul(m.c_str() + 6, NULL, 10);
+    if (ep <= 1700000000) {
+      const char* dt = strchr(m.c_str() + 6, '-');
+      if (dt) {
+        int y = 0, mon = 0, d = 0, h = 0, min = 0, s = 0;
+        if (sscanf(m.c_str() + 6, "%d-%d-%d %d:%d:%d", &y, &mon, &d, &h, &min, &s) >= 3) {
+          struct tm t = {0};
+          t.tm_year = y - 1900;
+          t.tm_mon = mon - 1;
+          t.tm_mday = d;
+          t.tm_hour = h;
+          t.tm_min = min;
+          t.tm_sec = s;
+          ep = mktime(&t);
+        }
+      }
+    }
     if (ep > 1700000000) {
       struct timeval tv = { .tv_sec = ep, .tv_usec = 0 };
       settimeofday(&tv, NULL);

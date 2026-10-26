@@ -76,7 +76,7 @@ class MotorWebNavActivity : AppCompatActivity() {
     private var insetBottom=0
 
     override fun onCreate(savedInstanceState:Bundle?) {
-        super.onCreate(savedInstanceState);supportActionBar?.hide()
+        super.onCreate(savedInstanceState);NavStyle.updateNight(this);supportActionBar?.hide()   // v8.3.24-ui.1 白夜模式
         if(WebMotorGuide.route==null){finish();return}
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         WindowCompat.setDecorFitsSystemWindows(window,false)
