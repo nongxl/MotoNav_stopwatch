@@ -1554,36 +1554,96 @@ void idlePowerPollSupply(bool force = false) {
     idlePowerOffReset(&idlePowerOffTimer, now);
 }
 
-// 小电池图标：x0,y0 = 左上角（电池身 24x12，右边小凸头，再右边是百分比数字）
+// 电池图标与内嵌电量：主体 40x18，右侧凸头 3x8，电量数字居中嵌在电池内部
 void drawBattery(int x0, int y0, bool backing = false) {
   if (batPct < 0) return;                                  // 没接电池不画
-  if (backing) {                                           // v7.2 小地图上垫一块黑底
-    int tw = String(batPct).length() * 6;
-    gfx->fillRoundRect(x0 - 4, y0 - 3, 24 + 2 + 5 + tw + 7, 12 + 6, 6, C_BLACK);
+  const int BW = 40, BH = 18, capW = 3, capH = 8;
+  const int totalW = BW + capW;
+
+  if (backing) {                                           // 小地图上垫一块黑底
+    gfx->fillRoundRect(x0 - 4, y0 - 3, totalW + 8, BH + 6, 6, C_BLACK);
   }
+
   uint16_t c = batChg ? C_CYAN : batPct > 50 ? C_GREEN : batPct >= 20 ? 0xFE60 : C_RED;
-  if (!batChg && batPct < 10 && (millis() / 600) % 2) c = 0x4208;   // 快没电：闪
-  const int W = 24, H = 12;
-  gfx->drawRoundRect(x0, y0, W, H, 3, c);
-  gfx->drawRoundRect(x0 + 1, y0 + 1, W - 2, H - 2, 2, c);
-  gfx->fillRect(x0 + W, y0 + 3, 2, H - 6, c);
-  int fw = (W - 6) * constrain(batPct, 0, 100) / 100;
-  if (fw > 0) gfx->fillRect(x0 + 3, y0 + 3, fw, H - 6, c);
-  if (batChg) {                                            // 小闪电
-    int bx = x0 + W / 2, by = y0 + H / 2;
-    gfx->fillTriangle(bx + 1, by - 5, bx - 3, by + 1, bx, by + 1, C_BLACK);
-    gfx->fillTriangle(bx - 1, by + 5, bx + 3, by - 1, bx, by - 1, C_BLACK);
+  if (!batChg && batPct < 10 && (millis() / 600) % 2) c = 0x4208;   // 快没电：闪烁
+
+  // 1. 电池主体外框与正极凸头
+  gfx->drawRoundRect(x0, y0, BW, BH, 4, c);
+  gfx->drawRoundRect(x0 + 1, y0 + 1, BW - 2, BH - 2, 3, c);
+  gfx->fillRoundRect(x0 + BW, y0 + (BH - capH) / 2, capW + 1, capH, 1, c);
+
+  // 2. 内部底色（纯黑）
+  gfx->fillRect(x0 + 2, y0 + 2, BW - 4, BH - 4, C_BLACK);
+
+  // 3. 电量条填充
+  int innerW = BW - 4; // 36
+  int innerH = BH - 4; // 14
+  int fw = innerW * constrain(batPct, 0, 100) / 100;
+  if (fw > 0) {
+    gfx->fillRect(x0 + 2, y0 + 2, fw, innerH, c);
   }
-  gfx->setTextSize(1);
-  gfx->setTextColor(c);
-  gfx->setCursor(x0 + W + 5, y0 + 2);
-  gfx->print(String(batPct));
+
+  // 4. 内嵌电量文字及充电标识
+  String pctStr = String(constrain(batPct, 0, 100));
+  int fillEdge = x0 + 2 + fw;
+
+  if (batChg) {
+    // 充电中：小闪电图标 + 数字紧凑居中
+    int textW = (int)pctStr.length() * 6 - 1;
+    int totalContentW = 7 + 2 + textW;
+    int startX = x0 + 2 + (innerW - totalContentW) / 2;
+    int boltX = startX + 3;
+    int boltY = y0 + BH / 2;
+
+    gfx->fillTriangle(boltX + 1, boltY - 4, boltX - 3, boltY, boltX, boltY, C_BLACK);
+    gfx->fillTriangle(boltX - 1, boltY + 4, boltX + 3, boltY, boltX, boltY, C_BLACK);
+    gfx->drawLine(boltX - 1, boltY - 2, boltX - 2, boltY + 2, C_WHITE);
+
+    int tx = startX + 9;
+    int ty = y0 + (BH - 7) / 2;
+    for (int i = 0; i < (int)pctStr.length(); i++) {
+      int cx = tx + i * 6;
+      bool inFill = (cx + 3 <= fillEdge);
+      if (!inFill && cx < fillEdge + 4) {
+        gfx->setTextSize(1);
+        gfx->setTextColor(C_BLACK);
+        gfx->setCursor(cx + 1, ty); gfx->print(pctStr[i]);
+        gfx->setCursor(cx - 1, ty); gfx->print(pctStr[i]);
+        gfx->setCursor(cx, ty + 1); gfx->print(pctStr[i]);
+        gfx->setCursor(cx, ty - 1); gfx->print(pctStr[i]);
+      }
+      gfx->setTextSize(1);
+      gfx->setTextColor(inFill ? C_BLACK : C_WHITE);
+      gfx->setCursor(cx, ty);
+      gfx->print(pctStr[i]);
+    }
+  } else {
+    // 未充电：电量数字完全居中
+    int textW = (int)pctStr.length() * 6 - 1;
+    int tx = x0 + 2 + (innerW - textW) / 2;
+    int ty = y0 + (BH - 7) / 2;
+    for (int i = 0; i < (int)pctStr.length(); i++) {
+      int cx = tx + i * 6;
+      bool inFill = (cx + 3 <= fillEdge);
+      if (!inFill && cx < fillEdge + 4) {
+        gfx->setTextSize(1);
+        gfx->setTextColor(C_BLACK);
+        gfx->setCursor(cx + 1, ty); gfx->print(pctStr[i]);
+        gfx->setCursor(cx - 1, ty); gfx->print(pctStr[i]);
+        gfx->setCursor(cx, ty + 1); gfx->print(pctStr[i]);
+        gfx->setCursor(cx, ty - 1); gfx->print(pctStr[i]);
+      }
+      gfx->setTextSize(1);
+      gfx->setTextColor(inFill ? C_BLACK : C_WHITE);
+      gfx->setCursor(cx, ty);
+      gfx->print(pctStr[i]);
+    }
+  }
 }
 
 void drawStatus() {
-  gfx->fillRect(CX - 9, 21, 9 + 14 + 24 + 2 + 5 + 18 + 4, 19, C_BLACK);   // v7.2 先擦掉旧的（只重画状态栏时用）
-  aaDisc(CX, 30, 7, bleConnected ? C_GREEN : C_GREY);
-  drawBattery(CX + 14, 24);                               // v6.8 电量（蓝牙小圆点右边）
+  gfx->fillRect(CX - 26, 20, 52, 22, C_BLACK);   // 擦除旧电池区域
+  drawBattery(CX - 21, 22);                      // 去掉重复的蓝牙圆点，放大电池图标并居中
   needFlush = true;
 }
 
@@ -2185,8 +2245,8 @@ void drawPageDots() {
   }
   // 底部第4点：倾角与G值仪表在下方(3)，直观提示用户下方还有一个页面
   aaDisc(CX, 451, 3.5f, page == 3 ? C_WHITE : 0x4208);
-  // 顶部第5点：伴侣模式在上方(4)，直观提示用户上方还有一个伴侣模式
-  aaDisc(CX, 21, 3.5f, page == 4 ? C_WHITE : 0x4208);
+  // 顶部第5点：伴侣模式在上方(4)，移至最顶部边缘避免与居中电池图标重叠
+  aaDisc(CX, 10, 3.5f, page == 4 ? C_WHITE : 0x4208);
 }
 
 void drawWaiting(int st) {
@@ -9389,7 +9449,7 @@ void drawMapFrame() {
   profMark(9);
   hasCam = saveCam; tripOn = saveTrip;
   drawNavHints(300);                                    // v5.0 重新规划中 / 更快路线 / GPS 信号弱
-  drawBattery(CX - 16, 18, true);                         // v6.8 电量（车速上方）；v7.2 带黑底
+  drawBattery(CX - 21, 16, true);                         // 电量（车速上方居中，内嵌电量数字带黑底）
   drawTrafficLightLab(millis());                        // 红绿灯竖排卡片
   profMark(10);
   // v2.9 小地图里不画顶部的蓝牙小圆点（会和 N 标记重叠；能收到地图就说明连着）
