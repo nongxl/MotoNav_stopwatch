@@ -1,0 +1,14 @@
+.gradle/
+.local/
+*.log
+.kotlin/
+.test-classes/
+.test-libs/
+.firmware-build/
+.arduino-cache/
+app/build/
+keystore/
+local.properties
+*.apk
+release/
+private*.json

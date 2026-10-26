@@ -45,7 +45,11 @@ final class BleLink: NSObject, ObservableObject {
     private var central: CBCentralManager!
     private var peripheral: CBPeripheral?
     private var rxChar: CBCharacteristic?
+    private var txChar: CBCharacteristic?
     private var wantConnected = true
+    private var handshake=BleHandshakeClock()
+    private var connectionRetries=0
+    private var retryAfter=0.0
 
     // 发送队列
     private struct Out { let key: String?; var data: Data }
@@ -70,6 +74,7 @@ final class BleLink: NSObject, ObservableObject {
         central = CBCentralManager(delegate: self, queue: .main,
                                    options: [CBCentralManagerOptionRestoreIdentifierKey: "motonav.central"])
         heartbeat = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { [weak self] _ in
+            self?.checkConnectionSetup()
             self?.requestBuildingCapability()
             MusicBridge.shared.syncLyrics()
             guard let self = self, self.isReady, self.queue.isEmpty, !self.bulkQ.hasData,
@@ -81,15 +86,20 @@ final class BleLink: NSObject, ObservableObject {
     // MARK: - 连接
 
     func connect() {
+        connectionRetries=0;retryAfter=0
         wantConnected = true
         guard central.state == .poweredOn else { status = "蓝牙没打开"; return }
-        if let p = peripheral, p.state == .connected || p.state == .connecting { return }
+        if let p = peripheral,p.state == .connected {
+            if !isReady { discover(p) };return
+        }
+        if let p = peripheral,p.state == .connecting { return }
         // 先找系统已经连着的（比如 App 重启后）
         let known = central.retrieveConnectedPeripherals(withServices: [serviceUUID])
         if let p = known.first { attach(p); return }
         if let idStr = UserDefaults.standard.string(forKey: "ble_peripheral"), let id = UUID(uuidString: idStr),
            let p = central.retrievePeripherals(withIdentifiers: [id]).first {
             attach(p)                                   // 直接连上次那块（不用扫描，圆屏开机就自动连上）
+            return
         }
         status = "正在搜索圆屏…"
         central.scanForPeripherals(withServices: [serviceUUID], options: nil)
@@ -97,6 +107,7 @@ final class BleLink: NSObject, ObservableObject {
 
     func disconnect() {
         wantConnected = false
+        handshake.begin(.idle,now:ProcessInfo.processInfo.systemUptime)
         central.stopScan()
         if let p = peripheral { central.cancelPeripheralConnection(p) }
     }
@@ -108,8 +119,33 @@ final class BleLink: NSObject, ObservableObject {
         MusicBridge.shared.resetAMS()
         peripheral = p
         p.delegate = self
+        rxChar=nil;txChar=nil
+        if p.state == .connected { discover(p);return }
         status = "正在连接…"
+        handshake.begin(.connecting,now:ProcessInfo.processInfo.systemUptime)
         central.connect(p, options: nil)
+    }
+
+    private func discover(_ p: CBPeripheral) {
+        guard p === peripheral else { return }
+        status="已连接，正在读取圆屏服务…"
+        handshake.begin(.services,now:ProcessInfo.processInfo.systemUptime)
+        p.discoverServices([serviceUUID])
+    }
+    private func checkConnectionSetup() {
+        guard wantConnected,central.state == .poweredOn,handshake.expired(now:ProcessInfo.processInfo.systemUptime) else { return }
+        connectionRetries += 1
+        retryAfter=ProcessInfo.processInfo.systemUptime+(connectionRetries>=3 ? 30 : 2)
+        if connectionRetries>=3 { status="圆屏暂不可用，稍后自动重试；也可点连接重试" }
+        else { status="连接步骤超时，正在重新连接（\(connectionRetries)/3）" }
+        if let p=peripheral {central.cancelPeripheralConnection(p)}
+    }
+    private func retryConnection(_ p:CBPeripheral) {
+        let delay=max(0,retryAfter-ProcessInfo.processInfo.systemUptime)
+        DispatchQueue.main.asyncAfter(deadline:.now()+delay){[weak self] in
+            guard let self=self,self.wantConnected,self.central.state == .poweredOn,self.peripheral === p,p.state == .disconnected else{return}
+            self.attach(p)
+        }
     }
 
     private func requestBuildingCapability() {
@@ -327,6 +363,8 @@ final class BleLink: NSObject, ObservableObject {
     private func onLinkReady() {
         guard !isReady, txNotifyReady else { return }
         isReady = true
+        handshake.begin(.ready,now:ProcessInfo.processInfo.systemUptime)
+        connectionRetries=0
         writePacer.reset()
         status = "已连接（数据包 \(maxWrite) 字节）"
         queue.removeAll()
@@ -365,45 +403,59 @@ extension BleLink: CBCentralManagerDelegate, CBPeripheralDelegate {
     }
 
     func centralManager(_ c: CBCentralManager, didDiscover p: CBPeripheral, advertisementData: [String: Any], rssi RSSI: NSNumber) {
+        guard wantConnected else{return}
+        if let current=peripheral,current.state == .connected || current.state == .connecting {return}
         c.stopScan()
         attach(p)
     }
 
     func centralManager(_ c: CBCentralManager, didConnect p: CBPeripheral) {
+        guard p === peripheral else { return }
         status = "已连接，正在读取服务…"
         UserDefaults.standard.set(p.identifier.uuidString, forKey: "ble_peripheral")
-        p.discoverServices([serviceUUID])
+        discover(p)
     }
 
     func centralManager(_ c: CBCentralManager, didFailToConnect p: CBPeripheral, error: Error?) {
+        guard p === peripheral else { return }
         status = "连接失败，重试中…"
         mediaHIDSupported = false; mediaHIDReady = false; mediaHIDMode = false; mediaLyricsSupported = false; mediaLyricsActive = false; mediaAMSControls = 0; verified = false; buildingProbe.reset(); txNotifyReady = false
         MusicBridge.shared.resetAMS()
         isReady = false
-        if wantConnected { c.connect(p, options: nil) }
+        connectionRetries+=1
+        retryAfter=ProcessInfo.processInfo.systemUptime+(connectionRetries>=3 ? 30 : 2)
+        handshake.begin(.idle,now:ProcessInfo.processInfo.systemUptime)
+        if connectionRetries>=3 {status="圆屏暂不可用，稍后自动重试"}
+        if wantConnected { retryConnection(p) }
     }
 
     func centralManager(_ c: CBCentralManager, didDisconnectPeripheral p: CBPeripheral, error: Error?) {
+        guard p === peripheral else { return }
         isReady = false
         bulkQ.reset(); bulkBarrier.reset(); bulkWriteSerial += 1
         buildingsSupported = false
         mediaHIDSupported = false; mediaHIDReady = false; mediaHIDMode = false; mediaLyricsSupported = false; mediaLyricsActive = false; mediaAMSControls = 0; verified = false; buildingProbe.reset(); txNotifyReady = false
         MusicBridge.shared.resetAMS()
         MapFeeder.shared.onBuildingCapability()
-        rxChar = nil
+        rxChar = nil;txChar=nil
         status = wantConnected ? "断开了，等圆屏回来自动重连…" : "未连接"
-        if wantConnected { c.connect(p, options: nil) }   // 不会超时：圆屏一出现就自动连上
+        handshake.begin(.idle,now:ProcessInfo.processInfo.systemUptime)
+        if wantConnected { retryConnection(p) }
     }
 
     func peripheral(_ p: CBPeripheral, didDiscoverServices error: Error?) {
+        guard p === peripheral else { return }
         guard let s = p.services?.first(where: { $0.uuid == serviceUUID }) else { status = "找不到圆屏的服务"; return }
         p.discoverCharacteristics([rxUUID, txUUID], for: s)
     }
 
     func peripheral(_ p: CBPeripheral, didDiscoverCharacteristicsFor s: CBService, error: Error?) {
+        guard p === peripheral else { return }
+        handshake.begin(.notifications,now:ProcessInfo.processInfo.systemUptime)
         for ch in s.characteristics ?? [] {
             if ch.uuid == rxUUID { rxChar = ch }
             if ch.uuid == txUUID {
+                txChar=ch
                 txNotifyReady = ch.isNotifying
                 if !ch.isNotifying { p.setNotifyValue(true, for: ch) }
             }
@@ -414,7 +466,8 @@ extension BleLink: CBCentralManagerDelegate, CBPeripheralDelegate {
     }
 
     func peripheral(_ p: CBPeripheral, didUpdateNotificationStateFor ch: CBCharacteristic, error: Error?) {
-        guard ch.uuid == txUUID else { return }
+        guard p === peripheral else { return }
+        guard ch === txChar else { return }
         txNotifyReady = error == nil && ch.isNotifying
         guard txNotifyReady else { isReady = false; status = "圆屏通知通道未就绪，请重新连接"; return }
         if rxChar != nil { onLinkReady() }
@@ -431,7 +484,8 @@ extension BleLink: CBCentralManagerDelegate, CBPeripheralDelegate {
     }
 
     func peripheral(_ p: CBPeripheral, didUpdateValueFor ch: CBCharacteristic, error: Error?) {
-        guard ch.uuid == txUUID, let d = ch.value else { return }
+        guard p === peripheral else { return }
+        guard ch === txChar,error == nil, let d = ch.value else { return }
         if d.first == 0xa6 { MusicBridge.shared.receiveAMS(d); return }
         guard let raw = String(data: d, encoding: .utf8) else { return }
         let s = raw.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -478,7 +532,7 @@ extension BleLink: CBCentralManagerDelegate, CBPeripheralDelegate {
                 screenFast = Int(parts[7]) ?? -1
                 t += "\n其中画地图 \(parts[5]) 毫秒，画边框和信息 \(parts[6]) 毫秒；快速刷屏\(parts[7] == "1" ? "开" : "关")"
             }
-            if parts.count >= 10, parts[8] != "0" { t += "\n画地图里，天地图底图占 \(parts[8]) 毫秒（\(parts[9]) 个核心一起画）" }
+            if parts.count >= 10, parts[8] != "0" { t += "\n画地图里，高德底图占 \(parts[8]) 毫秒（\(parts[9]) 个核心一起画）" }
             screenStats = t
             return
         }

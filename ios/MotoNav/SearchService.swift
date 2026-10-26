@@ -144,7 +144,7 @@ final class LocationService: NSObject, ObservableObject, CLLocationManagerDelega
     func setPrecise(_ on: Bool) {
         lm.desiredAccuracy = on ? kCLLocationAccuracyBestForNavigation : kCLLocationAccuracyHundredMeters
         lm.distanceFilter = kCLDistanceFilterNone
-        lm.activityType = on ? .automotiveNavigation : .other
+        lm.activityType = on ? (WebMotorSession.shared.running && WebMotorSession.shared.route?.request.bicycle == true ? .fitness : .automotiveNavigation) : .other
         lm.pausesLocationUpdatesAutomatically = !on
         lm.allowsBackgroundLocationUpdates = on
         lm.startUpdatingLocation()
@@ -152,6 +152,7 @@ final class LocationService: NSObject, ObservableObject, CLLocationManagerDelega
 
     func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {
         location = locations.last
+        if let l = locations.last { RideRecorder.shared.fix(l); WebMotorSession.shared.onFix(l) }
         if NaviBridge.shared.cruising, let l = locations.last { NaviBridge.shared.onCruiseLocation(l) }
     }
 

@@ -7,6 +7,7 @@ import AVFoundation
 final class Speech: NSObject, AVSpeechSynthesizerDelegate {
     static let shared = Speech()
     private let synth = AVSpeechSynthesizer()
+    private var automaticVoice: AVSpeechSynthesisVoice?
     private var busy = 0
     private var releaseWork: DispatchWorkItem?
     private(set) var isSpeaking = false
@@ -14,6 +15,32 @@ final class Speech: NSObject, AVSpeechSynthesizerDelegate {
     override init() {
         super.init()
         synth.delegate = self
+        automaticVoice = Self.preferredChineseVoice()
+    }
+
+    /// 只自动选择普通话。用 identifier 稳定排序，避免同级音色随枚举顺序切换。
+    private static func preferredChineseVoice() -> AVSpeechSynthesisVoice? {
+        let voices = AVSpeechSynthesisVoice.speechVoices()
+            .filter { $0.language == "zh-CN" }
+            .sorted { $0.identifier < $1.identifier }
+        if #available(iOS 16.0, *) {
+            if let premium = voices.first(where: { $0.quality == .premium }) {
+                return premium
+            }
+        }
+        return voices.first(where: { $0.quality == .enhanced })
+            ?? AVSpeechSynthesisVoice(language: "zh-CN")
+    }
+
+    private func selectedVoice() -> AVSpeechSynthesisVoice? {
+        let id = UserDefaults.standard.string(forKey: "voice_id") ?? ""
+        if !id.isEmpty, let selected = AVSpeechSynthesisVoice(identifier: id) {
+            return selected
+        }
+        // 每次自动播报前刷新，下载／删除系统音色后无需重装或修改设置。
+        // 不把自动结果写入 voice_id，以便以后继续自动升级音色。
+        automaticVoice = Self.preferredChineseVoice()
+        return automaticVoice
     }
 
     private func configureSession(active: Bool) {
@@ -42,8 +69,9 @@ final class Speech: NSObject, AVSpeechSynthesizerDelegate {
         busy += 1
         isSpeaking = true
         let u = AVSpeechUtterance(string: t)
-        u.voice = AVSpeechSynthesisVoice(language: "zh-CN")
-        u.rate = AVSpeechUtteranceDefaultSpeechRate
+        u.voice = selectedVoice()
+        u.rate = Float(UserDefaults.standard.object(forKey: "voice_rate") as? Double ?? Double(AVSpeechUtteranceDefaultSpeechRate))
+        u.pitchMultiplier = Float(UserDefaults.standard.object(forKey: "voice_pitch") as? Double ?? 1.0)
         synth.speak(u)
     }
 

@@ -85,22 +85,22 @@ final class RouteMapCache {
     init(root: URL? = nil) {
         self.root = root ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("route_maps")
     }
-    private func file(frame: MapGeo.Frame, source: Int, buildings: Bool, node: RouteMapPlan.Node) -> URL {
-        root.appendingPathComponent("\(buildings && source == 3 ? "v2" : "v1")-\(source)-\(buildings ? "buildings" : "base")/\(frame.refLat)_\(frame.refLng)/\(Int(node.x))_\(Int(node.y)).bin")
+    private func file(frame: MapGeo.Frame, source: Int, buildings: Bool, node: RouteMapPlan.Node, style: Int) -> URL {
+        root.appendingPathComponent("styles-v1-\(style)/\(buildings && source == 3 ? "v2" : "v1")-\(source)-\(buildings ? "buildings" : "base")/\(frame.refLat)_\(frame.refLng)/\(Int(node.x))_\(Int(node.y)).bin")
     }
-    func read(frame: MapGeo.Frame, source: Int, buildings: Bool, node: RouteMapPlan.Node) -> Data? {
+    func read(frame: MapGeo.Frame, source: Int, buildings: Bool, node: RouteMapPlan.Node, style: Int = 1) -> Data? {
         lock.lock(); defer { lock.unlock() }
-        let url = file(frame: frame, source: source, buildings: buildings, node: node)
+        let url = file(frame: frame, source: source, buildings: buildings, node: node, style: style)
         guard let attrs = try? FileManager.default.attributesOfItem(atPath: url.path),
               let size = attrs[.size] as? NSNumber, (17...480000).contains(size.intValue),
               let data = try? Data(contentsOf: url), RasterPacket.isBuilding(data) == buildings,
               RasterPacket.valid(data, frame: frame.id, x: Int(node.x - 1200), y: Int(node.y + 1200)) else { return nil }
         return data
     }
-    func store(_ data: Data, frame: MapGeo.Frame, source: Int, node: RouteMapPlan.Node) throws {
+    func store(_ data: Data, frame: MapGeo.Frame, source: Int, node: RouteMapPlan.Node, style: Int = 1) throws {
         guard RasterPacket.valid(data, frame: frame.id, x: Int(node.x - 1200), y: Int(node.y + 1200)) else { throw MapProcessingError.invalid("离线底图校验失败") }
         lock.lock(); defer { lock.unlock() }
-        let file = file(frame: frame, source: source, buildings: RasterPacket.isBuilding(data), node: node)
+        let file = file(frame: frame, source: source, buildings: RasterPacket.isBuilding(data), node: node, style: style)
         try FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
         var folder = root
         var values = URLResourceValues(); values.isExcludedFromBackup = true

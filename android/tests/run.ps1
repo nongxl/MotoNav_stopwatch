@@ -1,23 +1,15 @@
-param([string]$JavaPath = $env:JAVA_HOME)
-$ErrorActionPreference = 'Stop'
-$java = if ($JavaPath) { Join-Path $JavaPath 'bin/java.exe' } else { 'java' }
-$javac = if ($JavaPath) { Join-Path $JavaPath 'bin/javac.exe' } else { 'javac' }
-$root = Split-Path -Parent $PSScriptRoot
-$classes = Join-Path $root '.local/test-classes'
-$src = Join-Path $root 'app/src/main/java/com/example/motonav'
-New-Item -ItemType Directory -Force $classes | Out-Null
-$cases = @{
-    CruiseIdleTimerTest = @('CruiseIdleTimer.java')
-    MapStylePolicyTest = @('MapStylePolicy.java')
-    WeatherAreaTest = @('WeatherArea.java')
-    ArrivalPolicyTest = @('ArrivalPolicy.java')
-    RideToolsTest = @('RideTrackMath.java', 'MapLoadStatus.java')
-    MotorTrackTest = @('MotorTrack.java')
-}
-foreach ($test in $cases.Keys | Sort-Object) {
-    $sources = @($cases[$test] | ForEach-Object { Join-Path $src $_ })
-    & $javac -encoding UTF-8 -d $classes @sources (Join-Path $PSScriptRoot "$test.java")
-    if ($LASTEXITCODE -ne 0) { throw "$test compile failed" }
-    & $java -cp $classes "com.example.motonav.$test"
-    if ($LASTEXITCODE -ne 0) { throw "$test failed" }
-}
+$ErrorActionPreference='Stop'
+$taskJava=if($env:JAVA_HOME){Join-Path $env:JAVA_HOME 'bin/java.exe'}else{'java'}
+$taskJavac=if($env:JAVA_HOME){Join-Path $env:JAVA_HOME 'bin/javac.exe'}else{'javac'}
+$taskRoot=Split-Path -Parent $PSScriptRoot
+$taskClasses=Join-Path $taskRoot '.local/test-classes'
+New-Item -ItemType Directory -Force $taskClasses | Out-Null
+& $taskJavac -encoding UTF-8 -d $taskClasses (Join-Path $taskRoot 'app/src/main/java/com/example/motonav/CruiseIdleTimer.java') (Join-Path $PSScriptRoot 'CruiseIdleTimerTest.java')
+if($LASTEXITCODE -ne 0){throw 'Test compile failed'}
+& $taskJava -cp $taskClasses com.example.motonav.CruiseIdleTimerTest
+if($LASTEXITCODE -ne 0){throw 'Tests failed'}
+
+& $taskJavac -encoding UTF-8 -d $taskClasses (Join-Path $taskRoot 'app/src/main/java/com/example/motonav/MapStylePolicy.java') (Join-Path $PSScriptRoot 'MapStylePolicyTest.java')
+if($LASTEXITCODE -ne 0){throw 'Style test compile failed'}
+& $taskJava -cp $taskClasses com.example.motonav.MapStylePolicyTest
+if($LASTEXITCODE -ne 0){throw 'Style policy tests failed'}

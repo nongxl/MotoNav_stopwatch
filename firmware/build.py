@@ -67,10 +67,12 @@ def main():
     args = parser.parse_args()
     if not 1 <= args.jobs <= 32:
         parser.error('--jobs must be between 1 and 32')
-
     board = BOARDS[args.board]
     source = board['source']
-    version = re.search(r'^#define FW_VERSION "v([^\"]+)"', (source / 'MotoNav.ino').read_text(encoding='utf-8', errors='ignore'), re.MULTILINE).group(1)
+    cfg_file = source / 'src/core/FirmwareConfig.h'
+    ino_file = source / 'MotoNav.ino'
+    target_file = cfg_file if cfg_file.exists() else ino_file
+    version = re.search(r'^#define FW_VERSION "v([^\"]+)"', target_file.read_text(encoding='utf-8', errors='ignore'), re.MULTILINE).group(1)
     build = ROOT / '.build' / 'universal' / args.board
     output = build / 'output'
     output.mkdir(parents=True, exist_ok=True)

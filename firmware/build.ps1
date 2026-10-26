@@ -9,7 +9,13 @@ $taskBuild=Join-Path $taskRoot ".build/$Board"
 $taskSketch=Join-Path $taskBuild 'MotoNav'
 $taskOutput=Join-Path $taskBuild 'output'
 New-Item -ItemType Directory -Force $taskSketch,$taskOutput | Out-Null
-Get-ChildItem -LiteralPath (Join-Path $taskRoot "boards/$Board/MotoNav") -File | Where-Object Extension -in '.ino','.h' | Copy-Item -Destination $taskSketch -Force
+$taskSource=Join-Path $taskRoot "boards/$Board/MotoNav"
+Get-ChildItem -LiteralPath $taskSource -File -Recurse | Where-Object Extension -in '.ino','.h','.cpp','.c' | ForEach-Object {
+    $taskRelative=$_.FullName.Substring($taskSource.Length).TrimStart([char[]]'\/')
+    $taskTarget=Join-Path $taskSketch $taskRelative
+    New-Item -ItemType Directory -Force (Split-Path -Parent $taskTarget) | Out-Null
+    Copy-Item -LiteralPath $_.FullName -Destination $taskTarget -Force
+}
 if($Board -eq '185b'){
     $taskPin=Join-Path $taskSketch 'pin_config.h'
     $taskText=[IO.File]::ReadAllText($taskPin)
@@ -29,9 +35,10 @@ $taskArgs+=@('compile','--jobs',"$Jobs",'--libraries',(Join-Path $taskRoot 'libr
 & $CliPath @taskArgs
 if($LASTEXITCODE -ne 0){throw "Arduino build failed ($LASTEXITCODE)"}
 $taskDest=Join-Path $taskRoot "dist/$Board/panel$PanelVariant"
-New-Item -ItemType Directory -Force $taskDest | Out-Null
 $taskLabel=switch($Board){'175'{'1.75'}'185b'{'1.85B'}'stopwatch'{'stopwatch'}}
-$taskVersion=[regex]::Match([IO.File]::ReadAllText((Join-Path $taskSketch 'MotoNav.ino')),'^#define FW_VERSION "v([^\"]+)"',[Text.RegularExpressions.RegexOptions]::Multiline).Groups[1].Value
+$taskVersionSource=Join-Path $taskSketch 'src/core/FirmwareConfig.h'
+if(!(Test-Path -LiteralPath $taskVersionSource)){$taskVersionSource=Join-Path $taskSketch 'MotoNav.ino'}
+$taskVersion=[regex]::Match([IO.File]::ReadAllText($taskVersionSource),'^#define FW_VERSION "v([^\"]+)"',[Text.RegularExpressions.RegexOptions]::Multiline).Groups[1].Value
 if(!$taskVersion){throw 'Cannot read firmware version'}
 $taskName="MotoNav_universal_${taskLabel}_v${taskVersion}_panel$PanelVariant"
 $taskApp=[IO.File]::ReadAllBytes((Join-Path $taskOutput 'MotoNav.ino.bin'))

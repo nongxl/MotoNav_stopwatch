@@ -24,6 +24,8 @@ import android.os.Looper
 import android.os.ParcelUuid
 import android.os.SystemClock
 import java.util.UUID
+import android.util.Log
+import com.example.motonav.BleSession.Phase
 
 /**
  * 版本：跟随 App 版本，见 MainActivity.kt 里的 APP_VERSION（当前 v5.7；v5.7 显示底图用时；v4.6 请求蓝牙 2M 模式、统计实际传输速度；v5.5 图片栏扩到 8 个，修复天气页闪退）
@@ -74,7 +76,38 @@ object BleLink {
     private var scanStartAt = 0L
     @Volatile var needUnbond = false             // v6.9 手机记着配对、圆屏却不认了：要到系统蓝牙设置里取消配对
     private var staleCount = 0                   // v6.9 “手机有配对记录、却没通过验证就断开”连续几次
-    private var gatt: BluetoothGatt? = null
+    @Volatile private var gatt: BluetoothGatt? = null
+    private val session = BleSession<BluetoothGatt>()
+    private var triedDirect = false
+    private var capabilityQuerySent = false
+
+    private fun trace(message: String) { Log.i("MotoNavBLE", message) }
+
+    // Callbacks can arrive after close(), including for the same physical device.
+    // Always dispatch first, then check the exact GATT instance on the main thread.
+    private fun onCurrent(g: BluetoothGatt, block: () -> Unit) {
+        handler.post { if (gatt === g && session.owns(g)) block() }
+    }
+
+    private fun closeCurrent() {
+        val old = gatt
+        gatt = null
+        old?.let { session.clear(it) }
+        ready = false; verified = false; buildingsSupported = false
+        capabilityQuerySent = false; rxChar = null; mtu = 23
+        phyText = "?"; burstStart = 0L
+        synchronized(lock) { writing = false; queue.clear(); bulkQ.clear() }
+        try { old?.disconnect() } catch (_: Exception) {}
+        try { old?.close() } catch (_: Exception) {}
+    }
+
+    private fun failConnection(g: BluetoothGatt, reason: String) {
+        if (gatt !== g || !session.owns(g)) return
+        trace("retry phase=${session.phase()} reason=$reason")
+        closeCurrent()
+        status = "$reason，稍后自动重连"
+        scheduleRetry()
+    }
     private var rxChar: BluetoothGattCharacteristic? = null
     private var appContext: Context? = null
     private var scanning = false
@@ -143,12 +176,8 @@ object BleLink {
         auto = false
         handler.removeCallbacksAndMessages(null)
         stopScan()
-        synchronized(lock) { writing = false; queue.clear(); bulkQ.clear() }
-        ready = false
-        buildingsSupported=false
-        try { gatt?.disconnect(); gatt?.close() } catch (_: Exception) {}
-        gatt = null
-        rxChar = null
+        closeCurrent()
+        triedDirect = false
         status = "已停止"
     }
 
@@ -162,6 +191,22 @@ object BleLink {
                 return
             }
             if (gatt != null || scanning) return
+            // HID/system Bluetooth may already hold the link, so the screen no longer
+            // advertises. Attach our navigation GATT client directly before scanning.
+            if (!triedDirect) {
+                val last = lastAddr().takeIf { it.isNotEmpty() && it != skipAddr }
+                val known = last?.let { runCatching { ad.getRemoteDevice(it) }.getOrNull() }
+                    ?: (appContext?.getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager)
+                        ?.getConnectedDevices(BluetoothProfile.GATT)
+                        ?.filter { it.address != skipAddr && (it.name == "MotoNav" || it.name?.startsWith("MotoNav-") == true) }
+                        ?.singleOrNull()
+                if (known != null) {
+                    triedDirect = true
+                    connectDevice(known, known.name ?: "MotoNav")
+                    return
+                }
+            }
+            triedDirect = false // A failed direct attempt gets a complete scan before trying again.
             val scanner = ad.bluetoothLeScanner ?: run { status = "无法扫描"; scheduleRetry(); return }
             val filters = listOf(ScanFilter.Builder().setServiceUuid(ParcelUuid(SERVICE_UUID)).build())
             val settings = ScanSettings.Builder().setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY).build()
@@ -204,7 +249,9 @@ object BleLink {
     }
 
     private val scanCallback = object : ScanCallback() {
-        override fun onScanResult(callbackType: Int, result: ScanResult) {
+        override fun onScanResult(callbackType: Int, result: ScanResult) { handler.post { handleScanResult(result) } }
+
+        private fun handleScanResult(result: ScanResult) {
             if (!scanning) return
             // v7.8 优先连上次那块；别的圆屏先记着，等 4 秒还没见到上次那块再连
             val addr = result.device.address
@@ -217,10 +264,13 @@ object BleLink {
         }
 
         override fun onScanFailed(errorCode: Int) {
-            scanning = false
-            handler.removeCallbacks(scanTimeout)
-            status = "扫描失败（$errorCode），稍后自动重试"
-            scheduleRetry()
+            handler.post {
+                if (scanning) {
+                    stopScan()
+                    status = "扫描失败（$errorCode），稍后自动重试"
+                    scheduleRetry()
+                }
+            }
         }
     }
 
@@ -228,12 +278,28 @@ object BleLink {
     private val pickCandidate = Runnable { if (scanning) candidate?.let { connectTo(it) } }
 
     private fun connectTo(r: ScanResult) {
+        if (!scanning || gatt != null) return
+        connectDevice(r.device, r.scanRecord?.deviceName ?: r.device.name ?: "MotoNav")
+    }
+
+    private fun connectDevice(device: BluetoothDevice, name: String) {
         stopScan()
         candidate = null
-        screenName = r.scanRecord?.deviceName?.takeIf { it.isNotBlank() }
-            ?: (try { r.device.name } catch (_: SecurityException) { null }) ?: "MotoNav"
-        status = "找到 $screenName，正在连接…"
-        gatt = r.device.connectGatt(appContext, false, gattCallback, BluetoothDevice.TRANSPORT_LE)
+        handler.removeCallbacks(retryRunnable)
+        screenName = name
+        verified = false; pairHint = ""; needUnbond = false
+        status = "正在连接 $screenName…"
+        trace("connect direct=$triedDirect")
+        try {
+            val connection = device.connectGatt(appContext, false, gattCallback, BluetoothDevice.TRANSPORT_LE)
+            if (connection == null) {
+                status = "无法创建蓝牙连接，稍后重试"; scheduleRetry(); return
+            }
+            gatt = connection
+            session.begin(connection, now())
+        } catch (_: Exception) {
+            status = "蓝牙连接启动失败，请检查蓝牙权限"; scheduleRetry()
+        }
     }
 
     private fun prefs() = appContext?.getSharedPreferences("ble", Context.MODE_PRIVATE)
@@ -254,31 +320,23 @@ object BleLink {
         saveLast("")
         stopScan()
         handler.removeCallbacks(retryRunnable)
-        ready = false
-        buildingsSupported=false
-        verified = false
-        synchronized(lock) { writing = false; queue.clear(); bulkQ.clear() }
-        try { gatt?.disconnect(); gatt?.close() } catch (_: Exception) {}
-        gatt = null
-        rxChar = null
-        mtu = 23
+        closeCurrent()
+        triedDirect = false
         screenName = ""; screenBattery = ""; screenBatteryPct = -1
         pairHint = ""; staleCount = 0; needUnbond = false
         connect(c)
     }
 
-    // 协商大数据包没有回音时的兜底：2 秒后按默认小包继续
-    private val mtuFallback = Runnable { if (!ready && rxChar != null) gatt?.let { enableNotify(it) } }
-    // 订阅通知没有回音时的兜底
-    private val notifyFallback = Runnable { if (!ready && rxChar != null) onLinkReady() }
-
-    /** v2.0：订阅圆屏的通知通道（收“已收齐”确认用）；完成后进入就绪 */
+    /** Subscribe first: firmware sends its U,1 confirmation only in the first few seconds. */
     private fun enableNotify(g: BluetoothGatt) {
+        if (!session.owns(g) || session.phase() != Phase.NOTIFY) return
         val tx = g.getService(SERVICE_UUID)?.getCharacteristic(TX_UUID)
         val d = tx?.getDescriptor(CCCD_UUID)
-        if (tx == null || d == null) { onLinkReady(); return }   // 旧固件没有通知通道
+        if (tx == null || d == null) { failConnection(g, "圆屏缺少通知服务"); return }
         try {
-            g.setCharacteristicNotification(tx, true)
+            if (!g.setCharacteristicNotification(tx, true)) {
+                failConnection(g, "无法开启圆屏通知"); return
+            }
             val ok = if (Build.VERSION.SDK_INT >= 33) {
                 g.writeDescriptor(d, BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE) == BluetoothStatusCodes.SUCCESS
             } else {
@@ -287,15 +345,28 @@ object BleLink {
                 @Suppress("DEPRECATION")
                 g.writeDescriptor(d)
             }
-            if (!ok) { onLinkReady(); return }
-            handler.postDelayed(notifyFallback, 1500)
-        } catch (_: SecurityException) {
-            onLinkReady()
+            // Android may still be completing service discovery. Retry within the same bounded stage.
+            if (!ok) handler.postDelayed({ if (session.owns(g)) enableNotify(g) }, 300)
+        } catch (_: Exception) { failConnection(g, "圆屏通知订阅失败") }
+    }
+
+    private fun markVerified() {
+        if (verified) return
+        verified = true; pairHint = ""; staleCount = 0; needUnbond = false
+        gatt?.device?.address?.let { saveLast(it); skipAddr = "" }
+        trace("authenticated")
+        val g = gatt ?: return
+        if (ready) {
+            session.move(g, Phase.AUTH, Phase.READY, now(), 0)
+            status = "已连接（高速模式，数据包 ${maxWrite()} 字节）"
+            resendAll()
+            sendEvent("#HM,0")
         }
     }
 
     private fun onNotify(bytes: ByteArray?) {
         val msg = bytes?.toString(Charsets.UTF_8)?.trim() ?: return
+        if (BleSession.confirms(msg, capabilityQuerySent)) markVerified()
         if(msg=="CAP,HID,1") { handler.post { sendEvent("#HM,0") }; return }
         if(msg=="CAP,BLD,1") {
             markVerified()
@@ -328,10 +399,7 @@ object BleLink {
             if (id == -1) BootBrand.onSaveError() else id?.let { BootBrand.onReply(it) }
             return
         }
-        if (p.size >= 2 && p[0] == "U") {                // v6.4 圆屏：这台手机验证通过了
-            markVerified()
-            return
-        }
+        if (p.size >= 2 && p[0] == "U") return
         if (p.size >= 12 && p[0] == "Q") {             // v5.8 圆屏每帧各步骤用时（0.1 毫秒）
             markVerified()
             val names = listOf("底图", "道路", "路线", "红绿灯/电子眼/车头", "边缘渐暗", "北标/电子眼图标",
@@ -360,76 +428,80 @@ object BleLink {
     }
 
     private val gattCallback = object : BluetoothGattCallback() {
-        override fun onConnectionStateChange(g: BluetoothGatt, st: Int, newState: Int) {
-            if (newState == BluetoothProfile.STATE_CONNECTED) {
-                verified = false
-                buildingsSupported=false
+        override fun onConnectionStateChange(g: BluetoothGatt, st: Int, newState: Int) = onCurrent(g) {
+            trace("connection status=$st state=$newState")
+            if (st != BluetoothGatt.GATT_SUCCESS || newState == BluetoothProfile.STATE_DISCONNECTED) {
+                // Ordinary timeouts and missed callbacks do not prove the stored pairing is stale.
+                if (st == 5 || st == 15) checkStaleBond(g)
+                failConnection(g, "连接断开（$st）")
+            } else if (newState == BluetoothProfile.STATE_CONNECTED &&
+                session.move(g, Phase.CONNECTING, Phase.SERVICES, now(), 12000)) {
                 screenBattery = ""; screenBatteryPct = -1
-                status = "已连接，正在读取服务…"
-                g.requestConnectionPriority(BluetoothGatt.CONNECTION_PRIORITY_HIGH)
-                g.discoverServices()
-            } else if (newState == BluetoothProfile.STATE_DISCONNECTED) {
-                checkStaleBond(g)                        // v6.9 先看看是不是“手机记着、圆屏忘了”
-                ready = false
-        buildingsSupported=false
-                verified = false
-                synchronized(lock) { writing = false; queue.clear(); bulkQ.clear() }
-                rxChar = null
-                g.close()
-                if (gatt === g) gatt = null
-                mtu = 23
-                phyText = "?"; burstStart = 0L
-                status = if (auto) "连接断开，正在自动重连…" else "连接断开"
-                scheduleRetry()
+                status = "蓝牙已连接，正在读取圆屏服务…"
+                try {
+                    g.requestConnectionPriority(BluetoothGatt.CONNECTION_PRIORITY_HIGH)
+                    if (!g.discoverServices()) failConnection(g, "无法读取圆屏服务")
+                } catch (_: Exception) { failConnection(g, "读取圆屏服务失败") }
             }
         }
 
-        override fun onServicesDiscovered(g: BluetoothGatt, st: Int) {
+        override fun onServicesDiscovered(g: BluetoothGatt, st: Int) = onCurrent(g) {
+            if (session.phase() != Phase.SERVICES) return@onCurrent
+            trace("services status=$st")
+            if (st != BluetoothGatt.GATT_SUCCESS) {
+                failConnection(g, "读取圆屏服务失败（$st）"); return@onCurrent
+            }
             rxChar = g.getService(SERVICE_UUID)?.getCharacteristic(RX_UUID)
-            if (rxChar == null) {
-                status = "连上了但找不到服务，检查 UUID"
-                return
-            }
-            status = "已连接，正在协商数据包大小…"
-            if (!g.requestMtu(517)) {
-                enableNotify(g)
-            } else {
-                handler.postDelayed(mtuFallback, 2000)
-            }
+            if (rxChar == null) { failConnection(g, "未找到圆屏导航服务"); return@onCurrent }
+            val pairing = try { g.device.bondState != BluetoothDevice.BOND_BONDED } catch (_: Exception) { true }
+            session.move(g, Phase.SERVICES, Phase.NOTIFY, now(), if (pairing) 120000 else 12000)
+            status = "蓝牙已连接，正在开启圆屏通知…"
+            enableNotify(g)
         }
 
-        override fun onMtuChanged(g: BluetoothGatt, newMtu: Int, st: Int) {
-            handler.removeCallbacks(mtuFallback)
-            if (st == BluetoothGatt.GATT_SUCCESS) mtu = newMtu
-            // v4.6 请求蓝牙 2M 模式（速度翻倍）；手机或圆屏不支持时会自动保持 1M
+        override fun onDescriptorWrite(g: BluetoothGatt, d: BluetoothGattDescriptor, st: Int) = onCurrent(g) {
+            if (d.uuid != CCCD_UUID || d.characteristic.uuid != TX_UUID || session.phase() != Phase.NOTIFY) return@onCurrent
+            trace("notify status=$st")
+            if (st != BluetoothGatt.GATT_SUCCESS) {
+                failConnection(g, "圆屏通知订阅失败（$st）"); return@onCurrent
+            }
+            session.move(g, Phase.NOTIFY, Phase.MTU, now(), 3000)
+            status = "圆屏通知已开启，正在协商数据包…"
+            try { if (!g.requestMtu(517)) onLinkReady(g) }
+            catch (_: Exception) { onLinkReady(g) }
+        }
+
+        override fun onMtuChanged(g: BluetoothGatt, newMtu: Int, st: Int) = onCurrent(g) {
+            trace("mtu status=$st size=$newMtu")
+            if (st == BluetoothGatt.GATT_SUCCESS && newMtu >= 23) mtu = newMtu
             try {
-                if (Build.VERSION.SDK_INT >= 26)
-                    g.setPreferredPhy(BluetoothDevice.PHY_LE_2M_MASK, BluetoothDevice.PHY_LE_2M_MASK, BluetoothDevice.PHY_OPTION_NO_PREFERRED)
-            } catch (_: Throwable) {}
-            if (!ready) enableNotify(g)
+                g.setPreferredPhy(BluetoothDevice.PHY_LE_2M_MASK, BluetoothDevice.PHY_LE_2M_MASK, BluetoothDevice.PHY_OPTION_NO_PREFERRED)
+            } catch (_: Exception) {}
+            if (session.phase() == Phase.MTU) onLinkReady(g)
         }
 
-        // v4.6 蓝牙模式变了 / 读到了
-        override fun onPhyUpdate(g: BluetoothGatt, txPhy: Int, rxPhy: Int, st: Int) { phyText = phyName(txPhy) }
-        override fun onPhyRead(g: BluetoothGatt, txPhy: Int, rxPhy: Int, st: Int) { phyText = phyName(txPhy) }
-
-        override fun onDescriptorWrite(g: BluetoothGatt, d: BluetoothGattDescriptor, st: Int) {
-            handler.removeCallbacks(notifyFallback)
-            if (!ready) handler.post { if (!ready) onLinkReady() }
+        override fun onPhyUpdate(g: BluetoothGatt, txPhy: Int, rxPhy: Int, st: Int) = onCurrent(g) {
+            if (st == BluetoothGatt.GATT_SUCCESS) phyText = phyName(txPhy)
+        }
+        override fun onPhyRead(g: BluetoothGatt, txPhy: Int, rxPhy: Int, st: Int) = onCurrent(g) {
+            if (st == BluetoothGatt.GATT_SUCCESS) phyText = phyName(txPhy)
         }
 
         @Deprecated("Android 13 以下用这个")
         override fun onCharacteristicChanged(g: BluetoothGatt, c: BluetoothGattCharacteristic) {
-            @Suppress("DEPRECATION")
-            if (c.uuid == TX_UUID) onNotify(c.value)
+            @Suppress("DEPRECATION") val value = c.value?.copyOf()
+            if (c.uuid == TX_UUID) onCurrent(g) { onNotify(value) }
         }
-
         override fun onCharacteristicChanged(g: BluetoothGatt, c: BluetoothGattCharacteristic, value: ByteArray) {
-            if (c.uuid == TX_UUID) onNotify(value)
+            val copy = value.copyOf()
+            if (c.uuid == TX_UUID) onCurrent(g) { onNotify(copy) }
         }
 
-        // 上一条发完了：解锁，发下一条
-        override fun onCharacteristicWrite(g: BluetoothGatt, c: BluetoothGattCharacteristic, st: Int) {
+        override fun onCharacteristicWrite(g: BluetoothGatt, c: BluetoothGattCharacteristic, st: Int) = onCurrent(g) {
+            if (c.uuid != RX_UUID) return@onCurrent
+            if (st != BluetoothGatt.GATT_SUCCESS) {
+                failConnection(g, "圆屏数据发送失败（$st）"); return@onCurrent
+            }
             synchronized(lock) { writing = false }
             pump()
         }
@@ -438,12 +510,19 @@ object BleLink {
     private fun phyName(p: Int) = when (p) { 1 -> "1M"; 2 -> "2M"; 3 -> "Coded"; else -> "?" }
 
     /** 连接完全就绪：补发最近的全部状态和图片 */
-    private fun onLinkReady() {
-        if (ready) return
+    private fun onLinkReady(g: BluetoothGatt) {
+        if (!session.owns(g) || ready || session.phase() != Phase.MTU) return
+        val pairing = try { g.device.bondState != BluetoothDevice.BOND_BONDED } catch (_: Exception) { true }
+        session.move(g, Phase.MTU, if (verified) Phase.READY else Phase.AUTH, now(), if (verified) 0 else if (pairing) 120000 else 20000)
         ready = true
-        try { if (Build.VERSION.SDK_INT >= 26) gatt?.readPhy() } catch (_: Throwable) {}     // v4.6
-        status = "已连接（高速模式，数据包 ${maxWrite()} 字节）"
-        resendAll()
+        try { g.readPhy() } catch (_: Exception) {}
+        status = if (verified) "已连接（高速模式，数据包 ${maxWrite()} 字节）" else "导航通道已连接，正在确认圆屏配对…"
+        trace("channel ready verified=$verified mtu=$mtu")
+        // #GB? is a read-only query. Firmware only notifies CAP,BLD,1 after encrypted,
+        // authenticated pairing. This recovers a U,1 missed while system HID held the link.
+        capabilityQuerySent = true
+        send("#GB?")
+        if (verified) resendAll()
     }
 
     /** 补发最近的全部状态、图片、地图（连上时 / v6.4 配对验证通过时） */
@@ -470,6 +549,17 @@ object BleLink {
 
     private val heartbeat = object : Runnable {
         override fun run() {
+            val connection = gatt
+            if (connection != null && session.expired(now())) {
+                if (session.phase() == Phase.MTU) onLinkReady(connection)
+                else failConnection(connection, when (session.phase()) {
+                    Phase.CONNECTING -> "连接圆屏超时"
+                    Phase.SERVICES -> "读取圆屏服务超时"
+                    Phase.NOTIFY -> "开启圆屏通知超时"
+                    else -> "等待圆屏配对确认超时"
+                })
+            }
+            if (ready && !verified) { capabilityQuerySent = true; send("#GB?") }
             val idle = synchronized(lock) { queue.isEmpty() && bulkQ.isEmpty() && !writing }
             if (ready && idle && now() - lastWriteAt > HEARTBEAT_MS - 500) send("P")
             if (auto) handler.postDelayed(this, HEARTBEAT_MS)
@@ -480,6 +570,7 @@ object BleLink {
 
     /** 文字消息的类型：同类型在队列里只保留最新一条 */
     private fun keyOf(msg: String): String = when {
+        msg == "#GB?" -> "#GB?"
         // v6.3 "#D角度"、v7.2 "#L毫秒" 这类没有逗号的：按前两个字符算同一类（只留最新的）
         msg.startsWith("#") -> if (msg.contains(',')) msg.substringBefore(',') else msg.take(2)
         msg == "P" -> "P"
@@ -498,7 +589,7 @@ object BleLink {
                 lastImg.clear()
                 queue.removeAll { it.key != null && it.key.startsWith("B") }
             }
-            if (k != "P") lastState[k] = msg
+            if (k != "P" && k != "#GB?") lastState[k] = msg
             enqueue(k, msg.toByteArray(Charsets.UTF_8))
         }
         pump()
@@ -621,7 +712,8 @@ object BleLink {
             val stuck = now() - writeStartedAt > 1000
             if (writing && !stuck) return
             // 导航等状态消息优先，空闲时再发地图大块数据
-            val next = queue.firstOrNull()
+            val next = if (verified) queue.firstOrNull() else queue.firstOrNull { it.key == "#GB?" || it.key == "P" }
+            if (!verified && next == null) return
             if (next == null) {
                 val b = bulkQ.firstOrNull() ?: run { writing = false; return }
                 if (writeNow(b.data)) {
@@ -716,8 +808,10 @@ object BleLink {
             when (i.getIntExtra(BluetoothDevice.EXTRA_BOND_STATE, BluetoothDevice.ERROR)) {
                 BluetoothDevice.BOND_BONDING ->
                     pairHint = "正在配对：在手机弹出的配对框里输入圆屏上显示的 6 位数字（没弹出就下拉通知栏看看）"
-                BluetoothDevice.BOND_BONDED ->
+                BluetoothDevice.BOND_BONDED -> {
                     pairHint = "配对成功，正在验证…"
+                    if (ready && !verified) { capabilityQuerySent = true; send("#GB?") }
+                }
                 BluetoothDevice.BOND_NONE -> if (prev == BluetoothDevice.BOND_BONDING)
                     pairHint = "配对没成功。圆屏显示 LOCKED 的话：重启圆屏，2 分钟内再连"
             }

@@ -1,0 +1,14 @@
+inputs/
+car-code/
+car-resources/
+moto-code/
+framework/
+*.apk
+*.arsc
+AndroidManifest.xml
+AndroidManifest.binary.xml
+manifest-placeholder.xml
+manifest-ref-check.json
+merge-checks.json
+*.class
+*.idsig

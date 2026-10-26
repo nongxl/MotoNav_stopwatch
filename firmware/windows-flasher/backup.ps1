@@ -10,7 +10,11 @@ try {
     New-Item -ItemType Directory -Force $taskBackupDir | Out-Null
     $taskOutput=Join-Path $taskBackupDir ('当前Flash-'+$taskPort+'-'+(Get-Date -Format 'yyyyMMdd-HHmmss')+'.bin')
     & (Join-Path $PSScriptRoot 'tools\esptool.exe') --chip esp32s3 --port $taskPort --baud 460800 --after watchdog-reset read-flash 0x0 0x1000000 $taskOutput
-    if($LASTEXITCODE -ne 0){throw '备份未完成。'}
+    if($LASTEXITCODE -ne 0){
+        Write-Host '批量读取中断，改用芯片ROM方式重新读取；该方式较慢，请保持连接。'
+        & (Join-Path $PSScriptRoot 'tools\esptool.exe') --chip esp32s3 --port $taskPort --baud 115200 --no-stub --after watchdog-reset read-flash 0x0 0x1000000 $taskOutput
+        if($LASTEXITCODE -ne 0){throw '备份未完成；不完整文件不能用于恢复。'}
+    }
     if((Get-Item -LiteralPath $taskOutput).Length -ne 0x1000000){throw '备份大小不等于16MB。'}
     $taskHasher=[Security.Cryptography.SHA256]::Create()
     try{$taskHash=[BitConverter]::ToString($taskHasher.ComputeHash([IO.File]::ReadAllBytes($taskOutput))).Replace('-','')}

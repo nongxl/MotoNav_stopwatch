@@ -11,6 +11,7 @@ import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.webkit.CookieManager
 import android.webkit.GeolocationPermissions
 import android.webkit.SslErrorHandler
 import android.webkit.WebChromeClient
@@ -66,6 +67,7 @@ class MotorWebActivity : AppCompatActivity() {
             setTextColor(Color.LTGRAY); textSize = 12f; setPadding(12.dp, 6.dp, 12.dp, 6.dp)
         }
         root.addView(status)
+        CookieManager.getInstance().setAcceptCookie(true)
         web = WebView(this)
         web.settings.apply {
             javaScriptEnabled = true; domStorageEnabled = true
@@ -121,7 +123,7 @@ class MotorWebActivity : AppCompatActivity() {
             else Toast.makeText(this, "还没有开始网页导航", Toast.LENGTH_SHORT).show()
         }, LinearLayout.LayoutParams(-1, 44.dp))
         setContentView(root)
-        currentUrl = getSharedPreferences("webmotor",0).getString("last_page", WebMotorRoutes.PAGE)
+        currentUrl = intent.getStringExtra("initial_motor_url") ?: getSharedPreferences("webmotor",0).getString("last_page", WebMotorRoutes.PAGE)
             ?.takeIf { WebMotorRoutes.isPage(it) } ?: WebMotorRoutes.PAGE
         if (savedInstanceState == null || web.restoreState(savedInstanceState) == null) web.loadUrl(currentUrl)
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
@@ -219,7 +221,7 @@ class MotorWebActivity : AppCompatActivity() {
     }
     override fun onSaveInstanceState(outState: Bundle) { web.saveState(outState); super.onSaveInstanceState(outState) }
     override fun onResume() { super.onResume(); if (::web.isInitialized) web.onResume() }
-    override fun onPause() { if (::web.isInitialized) web.onPause(); super.onPause() }
+    override fun onPause() { if (::web.isInitialized) web.onPause(); CookieManager.getInstance().flush(); super.onPause() }
     override fun onDestroy() {
         sequence++; handler.removeCallbacksAndMessages(null); worker.shutdownNow()
         web.stopLoading(); web.destroy(); super.onDestroy()

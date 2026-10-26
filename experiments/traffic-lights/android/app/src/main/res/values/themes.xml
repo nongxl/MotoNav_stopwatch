@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- MotoNav 主题：深紫黑底（罪恶都市夜景配色），不要系统标题栏 -->
+<resources>
+    <style name="Theme.MotoNav" parent="Theme.AppCompat.NoActionBar">
+        <item name="colorPrimary">#FF4FB4</item>
+        <item name="colorPrimaryDark">#0E0A14</item>
+        <item name="colorAccent">#43E1F0</item>
+        <item name="android:windowBackground">#0E0A14</item>
+        <item name="android:statusBarColor">#0E0A14</item>
+        <item name="android:navigationBarColor">#0E0A14</item>
+    </style>
+    <style name="FusionHiddenCarTheme" parent="android:style/Theme.Translucent.NoTitleBar.Fullscreen">
+        <item name="android:windowIsTranslucent">true</item>
+        <item name="android:windowBackground">@android:color/transparent</item>
+        <item name="android:windowDisablePreview">true</item>
+        <item name="android:windowAnimationStyle">@null</item>
+        <item name="android:windowNoTitle">true</item>
+    </style>
+</resources>

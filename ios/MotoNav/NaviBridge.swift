@@ -121,6 +121,8 @@ final class NaviBridge: NSObject, ObservableObject {
     private var tick: Timer?
     private var lastRoadText = ""
     private var lastBottomText = ""
+    private var tripMeters = 0.0, tripMaxKmh = 0, tripStarted = Date()
+    private var tripPosition: (lat: Double,lng: Double)?
     private var lastTrip = ""
     private var lastSpeedMsg = ""
     private var rerouting = false
@@ -165,7 +167,7 @@ final class NaviBridge: NSObject, ObservableObject {
     /// iOS v0.7 填了（或换了）高德 key：导航模块在没有 key 时初始化过，不会自己换 key，
     /// 销毁重建一次，用新 key 重新初始化（导航、巡航中不动，等下次）
     func rebuildManager() {
-        if navigating || cruising { return }
+        if navigating || cruising || WebMotorSession.shared.running { return }
         if attached {
             let m = manager
             arrival.cancel(arrival.generation)
@@ -182,6 +184,7 @@ final class NaviBridge: NSObject, ObservableObject {
 
     func attach() {
         if attached { return }
+        WebRouteMetadata.shared.stop()
         attached = true
         let m = manager
         // Runtime protocol registration lives on the per-session callback relay.
@@ -197,6 +200,17 @@ final class NaviBridge: NSObject, ObservableObject {
         m.updateTrafficInfo = true
     }
 
+    /// Relinquish planning callbacks while independent guidance reads static camera metadata.
+    /// The next SDK plan calls attach() and installs a new arrival/callback generation.
+    func releaseForWebMetadata() -> Bool {
+        guard !navigating, !cruising else { return false }
+        planSeq += 1; arrival.cancel(arrival.generation)
+        if let callbacks=sessionCallbacks?.asRepresentative { manager.removeDataRepresentative(callbacks) }
+        sessionCallbacks=nil;manager.delegate=nil;attached=false
+        calculating=false;routeReady=false;routeOptions=[];selectedRouteID = -1
+        return true
+    }
+
     // MARK: - 路线和导航
 
     /// 现在的位置（高德坐标）：导航定位优先，其次手机定位
@@ -210,6 +224,7 @@ final class NaviBridge: NSObject, ObservableObject {
     /// 规划去 (lat, lng)（高德坐标）的路线。share 不为 nil 时按导入的高德分享路线走（沿路挑途经点，只要一条）；
     /// 否则一次规划最多 3 条（躲避拥堵），“不走高速”看设置。
     func plan(toLat lat: Double, lng: Double, share: AmapShare.Route? = nil) {
+        guard !navigating,!WebMotorSession.shared.running else { return }
         attach()
         destLat = lat; destLng = lng
         shareRoute = share
@@ -248,7 +263,7 @@ final class NaviBridge: NSObject, ObservableObject {
 
     /// 按上次的目的地重新规划（比如切换了“不走高速”）
     func replan(retry: Int = 1) {
-        guard !destLat.isNaN, !navigating else { return }
+        guard !destLat.isNaN, !navigating, !WebMotorSession.shared.running else { return }
         planFailed = false
         MapFeeder.shared.onNaviEnd()
         if cruising { stopCruise() }
@@ -342,7 +357,7 @@ final class NaviBridge: NSObject, ObservableObject {
     }
 
     func start(emulate: Bool) {
-        guard routeReady, !navigating else { return }
+        guard routeReady, !navigating, !WebMotorSession.shared.running else { return }
         attach()
         if cruising { endCruiseQuietly() }
         // Stop a previous arrival hold before attaching a new trip's callbacks.
@@ -363,6 +378,7 @@ final class NaviBridge: NSObject, ObservableObject {
         if emulate { emuSpeed = 60; manager.setEmulatorNaviSpeed(Int32(emuSpeed)) }
         let ok = emulate ? manager.startEmulatorNavi() : manager.startGPSNavi()
         if ok && arrival.acceptsGuidance(token) {
+            if !emulate { RideRecorder.shared.start("导航"); LocationService.shared.setPrecise(true) }
             info = emulate ? "模拟导航中" : "导航中"
             tick?.invalidate()
             tick = Timer.scheduledTimer(withTimeInterval: NaviBridge.TICK, repeats: true) { [weak self] _ in
@@ -402,6 +418,8 @@ final class NaviBridge: NSObject, ObservableObject {
         if arrived {
             guard let event = event, arrival.complete(token, event: event) else { return }
         } else { arrival.cancel(token) }
+        RideRecorder.shared.finish()
+        LocationService.shared.setPrecise(false)
         MapFeeder.shared.onNaviEnd()
         ShareGuide.shared.stop()
         tick?.invalidate(); tick = nil
@@ -411,6 +429,10 @@ final class NaviBridge: NSObject, ObservableObject {
         info = text
         shownDir = ""; shownDist = -1
         clearSuggest()
+        if arrived {
+            let minutes = max(1,Int(Date().timeIntervalSince(tripStarted)/60))
+            BleLink.shared.send("#O\(Int(tripMeters))/\(minutes)/\(tripMaxKmh)")
+        }
         send(msg)
         if arrived {
             // 和安卓一样：圆屏显示“已到达”4 秒，然后清屏回到待机（测速牌、车道、电子眼这些都清掉）
@@ -428,6 +450,7 @@ final class NaviBridge: NSObject, ObservableObject {
     }
 
     private func resetState() {
+        tripMeters = 0; tripMaxKmh = 0; tripStarted = Date(); tripPosition = nil
         curDir = ""; curAngle = nil; angleKey = ""; lastRouteKey = ""
         baseDist = 0; speedMps = 0
         shownDir = ""; shownDist = -1; lastSent = ""
@@ -642,7 +665,7 @@ final class NaviBridge: NSObject, ObservableObject {
 
     /// 电子眼类型 → 圆屏图标编号（和固件 CAM_ICONS 一致）：
     /// 0 电子眼 1 监控 2 测速 3 闯红灯 4 违章拍照 5 公交道 6 应急车道 7 非机动车道 8 区间起点 9 区间终点 10 流动测速 11 ETC
-    private static func camIcon(_ type: Int) -> Int {
+    static func camIcon(_ type: Int) -> Int {
         [0: 2, 1: 1, 2: 3, 3: 4, 4: 5, 5: 6, 6: 7, 8: 8, 9: 9, 10: 10, 11: 11][type] ?? 0
     }
     private static let CAM_NAMES = ["电子眼", "监控", "测速", "闯红灯", "违章拍照", "公交道", "应急车道", "非机动车道",
@@ -794,7 +817,7 @@ final class NaviBridge: NSObject, ObservableObject {
 
     /// 开始巡航（不设目的地）：返回 nil = 成功，否则是出错原因
     func startCruise() -> String? {
-        if navigating { return "导航中不能开巡航，先退出导航" }
+        if navigating || WebMotorSession.shared.running { return "导航中不能开巡航，先退出导航" }
         if cruising { return nil }
         attach()
         arrival.cancel(arrival.generation)
@@ -806,6 +829,7 @@ final class NaviBridge: NSObject, ObservableObject {
         MapFeeder.shared.onNaviStart()
         manager.detectedMode = .cameraAndSpecialRoad          // 电子眼和特殊道路设施都提醒
         cruising = true
+        RideRecorder.shared.start("巡航")
         cruiseIdle.start()
         cruiseRaw = "巡航已开始，等高德发来数据…"
         info = "巡航中"
@@ -829,6 +853,7 @@ final class NaviBridge: NSObject, ObservableObject {
         if !cruising { return }
         arrival.cancel(arrival.generation)
         cruising = false
+        RideRecorder.shared.finish()
         cruiseIdle.stop()
         MapFeeder.shared.onNaviEnd()
         cruiseTick?.invalidate(); cruiseTick = nil
@@ -1072,6 +1097,8 @@ extension NaviBridge {
         uiSpeed = kmh
         if let c = l.coordinate {
             myLat = Double(c.latitude); myLng = Double(c.longitude)
+            if let p = tripPosition { let d = Self.distM(p.lat,p.lng,myLat,myLng); if d < 300 { tripMeters += d } }
+            tripPosition = (myLat,myLng); tripMaxKmh = max(tripMaxKmh,kmh)
             ShareGuide.shared.onLocation(myLat, myLng)
             MapFeeder.shared.onLocation(lat: myLat, lng: myLng, bearing: l.heading, kmh: kmh)
         }

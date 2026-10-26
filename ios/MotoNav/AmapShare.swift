@@ -82,6 +82,7 @@ enum AmapShare {
             }
             throw Fail("链接里没找到路线信息（可能不是路线分享，或者链接已过期）\n最后打开的是：\(lastUrl.prefix(300))")
         }
+        if p.mode.contains("ride") { return try loadRide(p) }
         if p.mode.contains("motor") { return try loadMotor(p) }
         if p.mode.isEmpty || p.mode.contains("car") { return try loadCar(p) }
         throw Fail("目前只支持导入“驾车”和“摩托车”路线（这条是 \(p.mode)）")
@@ -109,6 +110,28 @@ enum AmapShare {
     }
 
     /// 驾车路线：m.amap.com/service/navigation/driving.json
+    private static func loadRide(_ p: Share) throws -> Route {
+        guard p.rideType != "elebike" else { throw Fail("不支持电瓶车分享，请选择自行车") }
+        let q = "https://m.amap.com/service/navigation/ride.json?origin=\(p.sLng),\(p.sLat)&destination=\(p.eLng),\(p.eLat)&rideType=bike&shareParam=\(enc(p.share))&uuid=\(UUID().uuidString)"
+        let j = try json(try get(q).body)
+        guard int(j["code"]) == 1, let data = j["data"] as? [String: Any], let paths = data["paths"] as? [[String: Any]], !paths.isEmpty else { throw Fail("高德未返回自行车路线") }
+        let path = paths[paths.indices.contains(p.pathIdx) ? p.pathIdx : 0]
+        var roads: [Road] = [], all: [LL] = []
+        for step in path["steps"] as? [[String: Any]] ?? [] {
+            var points: [LL] = []
+            for pair in (step["polyline"] as? String ?? "").split(separator: ";") {
+                let xy = pair.split(separator: ",")
+                guard xy.count == 2, let lo = Double(xy[0]), let la = Double(xy[1]), la.isFinite, lo.isFinite, abs(la)<=90, abs(lo)<=180 else { throw Fail("自行车路线坐标无效") }
+                points.append((la,lo))
+            }
+            guard all.count + points.count <= 150000 else { throw Fail("路线过长") }
+            all += points
+            roads.append(Road(name: step["instruction"] as? String ?? step["road"] as? String ?? "", length: int(step["distance"]), pts: points))
+        }
+        let points = dedup(all); guard points.count >= 2 else { throw Fail("自行车路线没有有效坐标") }
+        return Route(startName:p.sName,startLat:p.sLat,startLng:p.sLng,endName:p.eName,endLat:p.eLat,endLng:p.eLng,pts:points,roads:roads,distance:int(path["distance"]),timeS:int(path["duration"]),lights:0,restored:(j["isRestoreRoute"] as? Bool) ?? false,kind:"自行车")
+    }
+
     private static func loadCar(_ p: Share) throws -> Route {
         let q = "https://m.amap.com/service/navigation/driving.json?origin=\(p.sLng),\(p.sLat)&originid=&origintype=" +
             "&destination=\(p.eLng),\(p.eLat)&destinationid=&destinationtype=&waypoints=&strategy=10" +
@@ -212,7 +235,7 @@ enum AmapShare {
     // MARK: - 解析分享链接
 
     /// mode = 网址里的 navigation/xxx（carmap 驾车、motormap 摩托车……），pathIdx = 分享时选中的第几条路线
-    private struct Share { let sLat, sLng: Double; let sName: String; let eLat, eLng: Double; let eName: String; let share: String; let mode: String; let pathIdx: Int }
+    private struct Share { let sLat, sLng: Double; let sName: String; let eLat, eLng: Double; let eName: String; let share: String; let mode: String; let pathIdx: Int; var rideType: String = "bike" }
 
     private static var lastUrl = ""                    // 调试用：最后打开的网址
 
@@ -248,6 +271,20 @@ enum AmapShare {
     private static func parse(_ raw: String) -> Share? {
         var s = raw
         for _ in 0..<5 {
+            // Recent bicycle shares can contain only an encoded native route URI.
+            let nested = first(#"[?&]schema=([^&"'\s<>]+)"#, s, group: 1).map(fullDecode)
+            let native = nested ?? s
+            if native.hasPrefix("amapuri://route/plan?") || native.hasPrefix("androidamap://route?") {
+                var q: [String:String] = [:]
+                for item in URLComponents(string: native)?.queryItems ?? [] { q[item.name] = item.value }
+                guard q["t"] == "3", q["rideType"] != "elebike", q["dev"] == nil || q["dev"] == "0",
+                      (Int(q["vian"] ?? "0") ?? 0) == 0,
+                      let slat = q["slat"].flatMap(Double.init), let slng = q["slon"].flatMap(Double.init),
+                      let dlat = q["dlat"].flatMap(Double.init), let dlng = q["dlon"].flatMap(Double.init),
+                      slat.isFinite, slng.isFinite, dlat.isFinite, dlng.isFinite,
+                      abs(slat)<=90, abs(dlat)<=90, abs(slng)<=180, abs(dlng)<=180 else { return nil }
+                return Share(sLat:slat,sLng:slng,sName:q["sname"] ?? "分享起点",eLat:dlat,eLng:dlng,eName:q["dname"] ?? "分享目的地",share:"",mode:"ridemap",pathIdx:0)
+            }
             for m in matches(#"(?:__r|[?&]r)=([^&"'\s<>]+)"#, s) {
                 let f = m[1].components(separatedBy: ",")
                 if f.count < 13 { continue }
@@ -257,9 +294,9 @@ enum AmapShare {
                 if share.count <= 10 { continue }
                 // 路线类型：网址里的 navigation/xxx；没有就看第 8 项（11 = 摩托车）或 t= 参数
                 let mode = first(#"navigation/([A-Za-z]+)/"#, s, group: 1)?.lowercased()
-                    ?? ((fullDecode(f[7]) == "11" || first(#"[?&]t=11(?:&|$)"#, s) != nil) ? "motormap" : "carmap")
+                    ?? ((fullDecode(f[7]) == "3") ? "ridemap" : (fullDecode(f[7]) == "11" || first(#"[?&]t=11(?:&|$)"#, s) != nil) ? "motormap" : "carmap")
                 return Share(sLat: sLat, sLng: sLng, sName: fullDecode(f[2]), eLat: eLat, eLng: eLng, eName: fullDecode(f[5]),
-                             share: share, mode: mode, pathIdx: Int(fullDecode(f[8])) ?? 0)
+                             share: share, mode: mode, pathIdx: Int(fullDecode(f[8])) ?? 0, rideType: s.contains("elebike") ? "elebike" : "bike")
             }
             if let sp = first(#"shareParam=([^&"'\s,<>]+)"#, s, group: 1) {
                 let share = fullDecode(sp)
@@ -267,7 +304,7 @@ enum AmapShare {
                 let b = first(#"daddr=([^&"'\s<>]+)"#, s, group: 1).flatMap { lngLatName(fullDecode($0)) }
                 let mode = first(#"navigation/([A-Za-z]+)/"#, s, group: 1)?.lowercased() ?? ""
                 if let a = a, let b = b {
-                    return Share(sLat: a.0, sLng: a.1, sName: a.2, eLat: b.0, eLng: b.1, eName: b.2, share: share, mode: mode, pathIdx: 0)
+                    return Share(sLat: a.0, sLng: a.1, sName: a.2, eLat: b.0, eLng: b.1, eName: b.2, share: share, mode: mode, pathIdx: 0, rideType: s.contains("elebike") ? "elebike" : "bike")
                 }
             }
             let d = s.removingPercentEncoding ?? s

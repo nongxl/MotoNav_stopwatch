@@ -47,8 +47,10 @@ def verify_windows(package):
 
 def prepare():
     version=(ROOT/'firmware/RELEASE_VERSION').read_text().strip()
-    require(re.fullmatch(r'\d+\.\d+\.\d+',version),'Invalid firmware version')
-    source=(ROOT/'firmware/boards/175/MotoNav/MotoNav.ino').read_text(encoding='utf-8-sig')
+    require(re.fullmatch(r'\d+\.\d+\.\d+(?:-[A-Za-z0-9][A-Za-z0-9.-]*)?',version),'Invalid firmware version')
+    source_path=ROOT/'firmware/boards/175/MotoNav/src/core/FirmwareConfig.h'
+    if not source_path.exists(): source_path=ROOT/'firmware/boards/175/MotoNav/MotoNav.ino'
+    source=source_path.read_text(encoding='utf-8-sig')
     require(f'#define FW_VERSION "v{version}"' in source,'Source/release version mismatch')
     inputs=ROOT/'firmware/releases'/version
     manifest=json.loads((inputs/'manifest.json').read_text(encoding='utf-8'))

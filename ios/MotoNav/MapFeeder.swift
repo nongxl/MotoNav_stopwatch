@@ -4,9 +4,9 @@ import UIKit
 /// 版本：跟随 App 版本（见 Config.swift，iOS v0.2 新增；和安卓版 MapFeeder.kt 一样）
 ///
 /// 小地图数据：
-/// - 导航时下载当前位置附近约 2.4 公里见方的地图（天地图图片地图；没 key 或失败时换 OpenStreetMap 线条地图），
+/// - 导航时下载当前位置附近约 2.4 公里见方的地图（高德 SDK 截图底图），
 ///   快开出这一块时自动下载下一块（向前方偏移，前面的路多下载一些）。
-/// - 选了“卫星图”风格时改下天地图卫星照片（范围小一些：半边 700 米）。
+/// - 选了“卫星图”风格时改下高德卫星照片（范围小一些：半边 700 米）。
 /// - 导航路线（连同路上的红绿灯位置）单独打包发给圆屏。
 /// - iOS v0.3 原路线（导入的高德分享路线）：大块数据类型 4，圆屏画成橙色细线；"#o" 不显示
 /// - 每次定位把当前位置、朝向、车速发给圆屏："#p,坐标系,x分米,y分米,朝向,车速"。
@@ -30,9 +30,6 @@ final class MapFeeder: ObservableObject {
     static let TYPE_RASTER = 3
     static let TYPE_GHOST = 4
 
-    static let SRC_AUTO = 0
-    static let SRC_TDT = 1
-    static let SRC_OSM = 2
     static let SRC_AMAP = 3
     static let THEME_SAT = 10
 
@@ -87,7 +84,7 @@ final class MapFeeder: ObservableObject {
     private var chunkBuildingsComplete = false
     private var confirmedCenter: (x: Double, y: Double)?
     private var lastCoverageTrace = Date.distantPast
-    private var buildingMode: Bool { Settings.shared.mapSource == Self.SRC_AMAP && Settings.shared.buildings && BleLink.shared.buildingsSupported }
+    private var buildingMode: Bool { Settings.shared.theme == 1 && Settings.shared.mapSource == Self.SRC_AMAP && Settings.shared.buildings && BleLink.shared.buildingsSupported }
 
 
     private var enabled: Bool { Settings.shared.mapOn }
@@ -119,10 +116,7 @@ final class MapFeeder: ObservableObject {
         guard coords.count >= 2 else { return }
         preparedKey = key; preparedCoords = coords
         let f = ensureFrame(lat: coords[0].lat, lng: coords[0].lng), src = Settings.shared.mapSource
-        guard enabled, !satMode, Settings.shared.theme != 11, src != Self.SRC_OSM else { return }
-        if src != Self.SRC_AMAP && Settings.shared.tdtKeyInUse.isEmpty {
-            offlineStatus = "沿线离线地图需配置天地图 Key，或选择高德底图"; return
-        }
+        guard enabled, !satMode, Settings.shared.theme != 11 else { return }
         var hasher = Hasher()
         for c in coords { hasher.combine(c.lat); hasher.combine(c.lng) }
         let identity = "\(key)|\(hasher.finalize())|\(src)|\(buildingMode)"
@@ -131,7 +125,7 @@ final class MapFeeder: ObservableObject {
         workToken.cancel(); requestSerial += 1; fetching = false
         do {
             let plan = try RouteMapPlan(coords.map { (x: f.x($0.lng), y: f.y($0.lat)) })
-            let maps = RouteOfflineMaps(frame: f, plan: plan, source: src, buildings: buildingMode, tdtKey: Settings.shared.tdtKeyInUse,
+            let maps = RouteOfflineMaps(frame: f, plan: plan, source: src, buildings: buildingMode,
                 foregroundBusy: { [weak self] in self?.fetching ?? true },
                 onReady: { [weak self] node in
                     guard let self = self, self.offlineKey == identity, self.enabled, !self.fetching else { return }
@@ -230,7 +224,7 @@ final class MapFeeder: ObservableObject {
         let serial = requestSerial
         MapPipelineTrace.event("fetch-start", ["serial": serial, "buildings": buildingMode, "source": Settings.shared.mapSource])
         workToken.cancel(); let token = MapWorkToken(); workToken = token
-        let src = Settings.shared.mapSource, sat = satMode, buildings = buildingMode, key = Settings.shared.tdtKeyInUse
+        let src = Settings.shared.mapSource, sat = satMode, buildings = buildingMode, style = Settings.shared.theme
         let half = HALF, satHalf = SAT_HALF, maps = offlineMaps
         // Cached packets can be read and sent even when iOS has suspended graphics rendering.
         if let node = node, let cached = maps?.read(node) {
@@ -248,11 +242,11 @@ final class MapFeeder: ObservableObject {
             do {
                 if token.isCancelled { throw MapProcessingError.cancelled }
                 if sat {
-                    bytes = try TdtRaster.buildSat(f, cx: cx, cy: cy, half: satHalf, key: key).bytes
-                    gotSat = true; info = "天地图卫星图"
+                    bytes = try AmapSdkRaster.build(f,cx: cx,cy: cy,includeBuildings: false,shouldCancel: { token.isCancelled },satellite: true, style: style).bytes
+                    gotSat = true; info = "高德卫星图"
                 } else if src == Self.SRC_AMAP {
                     bytes = try AmapSdkRaster.build(f, cx: cx, cy: cy, includeBuildings: buildings, shouldCancel: { token.isCancelled }, onBaseReady: { base in
-                        if let node = node { try? RouteMapCache.shared.store(base, frame: f, source: src, node: node) }
+                        if let node = node { try? RouteMapCache.shared.store(base, frame: f, source: src, node: node, style: style) }
                         DispatchQueue.main.async {
                             if serial == self.requestSerial && !token.isCancelled {
                                 self.fetchingBaseReady = true
@@ -263,26 +257,13 @@ final class MapFeeder: ObservableObject {
                         DispatchQueue.main.async {
                             if serial == self.requestSerial && !token.isCancelled { self.buildingInfo = message }
                         }
-                    }).bytes
+                    }, style: style).bytes
                     info = "高德无字底图，2 米/像素"
-                } else if src != Self.SRC_OSM {
-                    bytes = try TdtRaster.build(f, cx: cx, cy: cy, half: half, key: key).bytes
-                    info = "天地图底图，2 米/像素"
                 }
                 if let packet = bytes, let node = node, !sat, !token.isCancelled {
-                    try? RouteMapCache.shared.store(packet, frame: f, source: src, node: node)
+                    try? RouteMapCache.shared.store(packet, frame: f, source: src, node: node, style: style)
                 }
             } catch { errorText = error.localizedDescription }
-            // Explicit AMap mode never silently downloads OSM or changes its map provider.
-            if bytes == nil && src != Self.SRC_TDT && src != Self.SRC_AMAP && !token.isCancelled {
-                do {
-                    let m = half + 150, sw = MapGeo.gcjToWgs(f.lat(cy - m), f.lng(cx - m)), ne = MapGeo.gcjToWgs(f.lat(cy + m), f.lng(cx + m))
-                    let json = try OsmFetch.query(s: sw.lat, w: sw.lng, n: ne.lat, e: ne.lng)
-                    let features = OsmFetch.parse(json, f)
-                    bytes = MapGeo.encodeChunk(frameId: f.id, cx: cx, cy: cy, half: half, feats: features, maxBytes: Self.MAX_BYTES, maxFeat: Self.MAX_FEAT)
-                    type = Self.TYPE_CHUNK; info = "OpenStreetMap \(features.count) 个要素"
-                } catch { errorText += "；" + error.localizedDescription }
-            }
             DispatchQueue.main.async {
                 guard serial == self.requestSerial, !token.isCancelled else { return }
                 self.fetching = false
@@ -444,116 +425,4 @@ enum MapPipelineTrace {
         }
     }
     #endif
-}
-
-/// 从 OpenStreetMap 的 Overpass 接口下载并解析道路、绿地、水面（同步调用，只在后台队列里用）
-enum OsmFetch {
-    private static let SERVERS = [
-        "https://overpass-api.de/api/interpreter",
-        "https://overpass.kumi.systems/api/interpreter",
-        "https://maps.mail.ru/osm/tools/overpass/api/interpreter",
-    ]
-
-    static func query(s: Double, w: Double, n: Double, e: Double) throws -> Data {
-        let bb = String(format: "%.6f,%.6f,%.6f,%.6f", s, w, n, e)
-        let q = """
-        [out:json][timeout:25];
-        (
-          way["highway"~"^(motorway|trunk|primary|secondary|tertiary|unclassified|residential|living_street|service|motorway_link|trunk_link|primary_link|secondary_link|tertiary_link)$"](\(bb));
-          way["leisure"~"^(park|garden|pitch|golf_course|nature_reserve)$"](\(bb));
-          way["landuse"~"^(grass|forest|meadow|recreation_ground|village_green|park|reservoir|basin)$"](\(bb));
-          way["natural"~"^(wood|scrub|grassland|water)$"](\(bb));
-          way["waterway"="riverbank"](\(bb));
-          relation["natural"="water"](\(bb));
-          relation["leisure"="park"](\(bb));
-          relation["landuse"~"^(forest|grass)$"](\(bb));
-        );
-        out geom;
-        """
-        var allowed = CharacterSet.alphanumerics
-        allowed.insert(charactersIn: "-._*")
-        let body = "data=" + (q.addingPercentEncoding(withAllowedCharacters: allowed) ?? "")
-        var last: Error = TdtRaster.Fail("无法连接地图服务器")
-        for srv in SERVERS {
-            var req = URLRequest(url: URL(string: srv)!, timeoutInterval: 40)
-            req.httpMethod = "POST"
-            req.setValue("MotoNav/iOS (personal motorcycle display)", forHTTPHeaderField: "User-Agent")
-            req.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
-            req.httpBody = Data(body.utf8)
-            let sem = DispatchSemaphore(value: 0)
-            var result: Data?, code = 0, err: Error?
-            URLSession.shared.dataTask(with: req) { d, r, e in
-                result = d; code = (r as? HTTPURLResponse)?.statusCode ?? 0; err = e
-                sem.signal()
-            }.resume()
-            sem.wait()
-            if let d = result, code == 200 { return d }
-            last = err ?? TdtRaster.Fail("HTTP \(code)")
-        }
-        throw last
-    }
-
-    /// 根据标签决定类别：返回 (类别, 是否面)，不需要的返回 nil
-    private static func classify(_ tags: [String: Any]?) -> (Int, Bool)? {
-        guard let tags = tags else { return nil }
-        func s(_ k: String) -> String { tags[k] as? String ?? "" }
-        let hw = s("highway")
-        if !hw.isEmpty {
-            let c: Int
-            switch hw {
-            case "motorway", "trunk": c = 1
-            case "primary": c = 2
-            case "secondary", "tertiary": c = 3
-            case "residential", "unclassified", "living_street": c = 4
-            case "service", "motorway_link", "trunk_link", "primary_link", "secondary_link", "tertiary_link": c = 5
-            default: return nil
-            }
-            if s("area") == "yes" { return nil }
-            return (c, false)
-        }
-        let natural = s("natural"), landuse = s("landuse")
-        if natural == "water" || s("waterway") == "riverbank" || landuse == "reservoir" || landuse == "basin" { return (MapGeo.CLS_WATER, true) }
-        if tags["leisure"] != nil || !landuse.isEmpty || !natural.isEmpty { return (MapGeo.CLS_PARK, true) }
-        return nil
-    }
-
-    private static func geom(_ arr: [[String: Any]]?, _ f: MapGeo.Frame) -> [Double]? {
-        guard let arr = arr, arr.count >= 2 else { return nil }
-        var out: [Double] = []
-        out.reserveCapacity(arr.count * 2)
-        for p in arr {
-            guard let la = (p["lat"] as? NSNumber)?.doubleValue, let lo = (p["lon"] as? NSNumber)?.doubleValue else { continue }
-            let g = MapGeo.wgsToGcj(la, lo)
-            out.append(f.x(g.lng)); out.append(f.y(g.lat))
-        }
-        return out.count >= 4 ? out : nil
-    }
-
-    static func parse(_ json: Data, _ f: MapGeo.Frame) -> [MapGeo.Feature] {
-        guard let root = try? JSONSerialization.jsonObject(with: json) as? [String: Any],
-              let els = root["elements"] as? [[String: Any]] else { return [] }
-        var out: [MapGeo.Feature] = []
-        for el in els {
-            guard let cls = classify(el["tags"] as? [String: Any]) else { continue }
-            switch el["type"] as? String {
-            case "way":
-                guard let g = geom(el["geometry"] as? [[String: Any]], f) else { continue }
-                if cls.1 && g.count < 6 { continue }
-                out.append(MapGeo.Feature(cls: cls.0, poly: cls.1, pts: g))
-            case "relation":
-                if !cls.1 { continue }
-                guard let mem = el["members"] as? [[String: Any]] else { continue }
-                var parts: [[Double]] = []
-                for m in mem {
-                    if m["type"] as? String != "way" { continue }
-                    let role = m["role"] as? String ?? ""
-                    if role != "outer" && role != "" { continue }
-                    if let g = geom(m["geometry"] as? [[String: Any]], f) { parts.append(g) }
-                }
-                for r in MapGeo.joinRings(parts) where r.count >= 6 { out.append(MapGeo.Feature(cls: cls.0, poly: true, pts: r)) }
-            default: break
-            }
-        }
-        return out
-    }
 }

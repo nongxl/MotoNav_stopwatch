@@ -1,61 +1,66 @@
 package com.example.motonav;
 
+import java.nio.file.*;
 import java.util.*;
 
-/** Synthetic routes only: no real trip, account cookies or service requests. */
 public final class WebMotorRouteTest {
     static int checks;
-    static void check(boolean good, String why) { checks++; if (!good) throw new AssertionError(why); }
-    static void fails(Runnable action, String why) {
-        try { action.run(); } catch (IllegalArgumentException | IllegalStateException e) { checks++; return; }
+    static void check(boolean good,String why) { checks++;if(!good)throw new AssertionError(why); }
+    static void fails(Runnable action,String why) {
+        try { action.run(); } catch(IllegalArgumentException|IllegalStateException e) {checks++;return;}
         throw new AssertionError(why);
     }
-    public static void main(String[] args) {
-        MotorRequest request = new MotorRequest(new MotorPoint(30,104,"起点",""),
-            new MotorPoint(30.002,104.001,"终点",""), Collections.emptyList());
-        String path = "{\"distance\":333,\"cost\":{\"duration\":90,\"traffic_lights\":2},\"steps\":["
-            + "{\"polyline\":\"104,30;104,30.001;104,30.002\",\"step_distance\":222,\"navi\":{\"action\":\"右转\"}},"
-            + "{\"polyline\":\"104,30.002;104.001,30.002\",\"step_distance\":111,\"navi\":{\"action\":\"到达目的地\"}}]}";
-        String response = "{\"code\":1,\"data\":[" + path + "," + path.replace("104.001", "104.002") + "]}";
-        List<WebMotorRoute> routes = WebMotorRoutes.INSTANCE.parse(response,request);
-        check(routes.size()==2,"all alternatives parsed");
+    public static void main(String[] args) throws Exception {
+        MotorRequest request=new MotorRequest(new MotorPoint(30.533852,104.007799,"起点",""),
+            new MotorPoint(30.077114,103.848417,"终点","B07290070A"),Collections.emptyList());
+        List<WebMotorRoute> routes=WebMotorRoutes.INSTANCE.parse(Files.readString(Path.of(args[0])),request);
+        check(!routes.isEmpty(),"real response routes");
         WebMotorRoute route=routes.get(0);
-        check(route.getPoints().size()==4,"shared boundary deduplicated");
-        check(route.getSteps().size()==2,"all turn steps retained");
-        check(route.getDistance()==333 && route.getSeconds()==90 && route.getLights()==2,"metadata");
-        check(route.getSteps().get(0).getDir().equals("R"),"right turn");
-        check(route.getSteps().get(1).getDir().equals("S"),"destination ahead is guidance only");
-        check(routes.get(1).getPoints().get(3)[1]==104.002,"alternative owns its geometry");
-        for (WebMotorRoute candidate : routes) {
-            MotorTrack track=candidate.tracker();
-            long time=1000;
-            for (double p=0;p<track.total-40;p+=10) {
-                double[] pose=track.at(p);
-                MotorTrack.Match match=track.update(pose[0],pose[1],5,10,time);time+=1000;
-                check(Math.abs(match.progress-p)<20,"full geometry tracking");
-                check(!match.arrived,"no early completion");
-            }
-            double[] end=track.at(track.total);
-            boolean arrived=false;
-            for(int i=0;i<4;i++) { arrived |= track.update(end[0],end[1],5,0,time).arrived;time+=1000; }
-            check(arrived,"stable terminal fixes arrive");
+        check(route.getDistance()==61579,"actual distance");
+        check(route.getSeconds()==5580,"actual duration");
+        check(route.getLights()==76,"actual lights");
+        check(route.getPoints().size()==865,"all 865 distinct points from the real response");
+        check(route.getSteps().size()==11,"all 11 turn instructions");
+        check(route.getSteps().get(0).getDir().equals("R"),"first right turn");
+        MotorTrack track=route.tracker();
+        long elapsed=1000; boolean arrived=false;
+        for(double p=0;p<track.total;p+=20) {
+            double[] pose=track.at(p);
+            MotorTrack.Match m=track.update(pose[0],pose[1],5,20,elapsed);elapsed+=1000;
+            check(m!=null,"real geometry tracking");
+            check(Math.abs(m.progress-p)<25,"progress tracks actual geometry");
+            if(track.total-p>50)check(!m.arrived,"no premature arrival on real route");
+            arrived|=m.arrived;
         }
-        fails(()->WebMotorRoutes.INSTANCE.parse("<html>verification</html>",request),"verification page rejected");
-        fails(()->WebMotorRoutes.INSTANCE.parse("{\"code\":0,\"message\":\"blocked\"}",request),"service error rejected");
-        fails(()->WebMotorRoutes.INSTANCE.parse("{\"code\":1,\"data\":[]}",request),"empty route rejected");
-        fails(()->WebMotorRoutes.INSTANCE.parse(response.replace("104.001,30.002","NaN,30.002"),request),"invalid coordinate rejected");
-        fails(()->WebMotorRoutes.INSTANCE.parse(response.replace("104.001,30.002","104,50"),request),"discontinuous geometry rejected");
+        double[] end=track.at(track.total);
+        for(int i=0;i<4;i++){arrived|=track.update(end[0],end[1],5,0,elapsed).arrived;elapsed+=1000;}
+        check(arrived,"real route can arrive");
+        String minimal="{\"code\":1,\"data\":[{\"distance\":100,\"cost\":{\"duration\":10},\"steps\":[{\"polyline\":\"104,30;104,30.001\",\"navi\":{\"action\":\"到达目的地\"}}]}]}";
+        check(WebMotorRoutes.INSTANCE.parse(minimal,request).get(0).getSteps().get(0).getDir().equals("S"),"arrival-ahead is guidance only");
+        fails(()->WebMotorRoutes.INSTANCE.parse("<html>verification</html>",request),"verification must not produce route");
+        fails(()->WebMotorRoutes.INSTANCE.parse("{\"code\":0,\"message\":\"blocked\"}",request),"error code");
+        fails(()->WebMotorRoutes.INSTANCE.parse("{\"code\":1,\"data\":[]}",request),"empty data");
+        fails(()->WebMotorRoutes.INSTANCE.parse(minimal.replace("104,30.001","NaN,30.001"),request),"invalid geometry");
+        fails(()->WebMotorRoutes.INSTANCE.parse(minimal.replace("104,30.001","104,50"),request),"discontinuous geometry");
+        check(route.getPoints().stream().allMatch(p->MotorTrack.valid(p[0],p[1])),"all lat/lng finite");
         String url=request.pageUrl();
-        check(WebMotorRoutes.INSTANCE.request(url).equals(request),"URL round trip");
-        MotorRequest via=new MotorRequest(request.getStart(),request.getEnd(),List.of(new MotorPoint(30.001,104,"途经点","")));
-        check(WebMotorRoutes.INSTANCE.request(via.pageUrl()).equals(via),"explicit vias preserved");
-        check(WebMotorRoutes.INSTANCE.request(url+"&via%5B0%5D%5Blnglat%5D=104%2C30.001&via%5B0%5D%5Bname%5D=%E9%80%94%E7%BB%8F%E7%82%B9").equals(via),"nested vias preserved");
-        fails(()->WebMotorRoutes.INSTANCE.request(url.replace("https:","http:")),"HTTPS required");
+        check(WebMotorRoutes.INSTANCE.request(url).equals(request),"page URL roundtrip");
+        MotorRequest viaRequest=new MotorRequest(request.getStart(),request.getEnd(),
+            List.of(new MotorPoint(30.3,104,"中途地点","")));
+        check(WebMotorRoutes.INSTANCE.request(viaRequest.pageUrl()).equals(viaRequest),"explicit via preserved");
+        check(WebMotorRoutes.INSTANCE.request(url+"&via%5B0%5D%5Blnglat%5D=104%2C30.3&via%5B0%5D%5Bname%5D=%E4%B8%AD%E9%80%94%E5%9C%B0%E7%82%B9").equals(viaRequest),"nested via preserved");
+        fails(()->WebMotorRoutes.INSTANCE.request(url.replace("https:","http:")),"non-HTTPS rejected");
         fails(()->WebMotorRoutes.INSTANCE.request(url.replace("www.amap.com","www.amap.com.evil.example")),"foreign host rejected");
         fails(()->WebMotorRoutes.INSTANCE.request(url.replace("type=4","type=0")),"car mode rejected");
-        fails(()->WebMotorRoutes.INSTANCE.request(url.replace("flat=30.0","flat=NaN")),"invalid start rejected");
-        fails(()->WebMotorRoutes.INSTANCE.request(url+"&vid=unresolved"),"ID-only vias cannot disappear");
-        fails(()->WebMotorRoutes.INSTANCE.request(url+"&vlat=30.001%7C30.002&vlon=104"),"mismatched vias rejected");
-        System.out.println("WebMotorRoute synthetic fixtures: "+checks+" checks passed");
+        fails(()->WebMotorRoutes.INSTANCE.request(url.replace("flat=30.533852","flat=NaN")),"invalid start coordinate rejected");
+        fails(()->WebMotorRoutes.INSTANCE.request(url+"&vid=unresolved"),"unresolved via cannot be silently discarded");
+        fails(()->WebMotorRoutes.INSTANCE.request(url+"&vlat=30.3%7C30.4&vlon=104"),"mismatched via arrays");
+        // Every alternative uses its own full coordinate sequence, not the first route's geometry.
+        for(WebMotorRoute alternate:routes) {
+            MotorTrack next=alternate.tracker();
+            check(next.total>50000,"alternative geometry is usable");
+            check(alternate.getPoints().size()>2,"alternative has a route");
+        }
+        System.out.println("WebMotorRoute: "+checks+" checks passed; "+route.getPoints().size()+" points / "+route.getSteps().size()+" steps; geometry "+Math.round(track.total)+"m");
     }
 }

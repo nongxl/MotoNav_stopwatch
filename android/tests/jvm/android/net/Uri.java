@@ -7,9 +7,7 @@ import java.util.*;
 
 public final class Uri {
     private final String value;
-    // Also supports the test ContentResolver's local file adapter.
-    public final String path;
-    public Uri(String value) { this.value=value; this.path=value; }
+    private Uri(String value) { this.value=value; }
     public static Uri parse(String value) { return new Uri(value); }
     private URI uri() { return URI.create(value.replace("[","%5B").replace("]","%5D").replace("|","%7C")); }
     public String getScheme(){return uri().getScheme();}

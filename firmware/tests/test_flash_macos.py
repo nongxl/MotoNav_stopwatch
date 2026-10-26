@@ -14,6 +14,29 @@ spec.loader.exec_module(flash)
 
 
 class FlashTests(unittest.TestCase):
+    def test_split_configuration_takes_priority(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            source = root / "firmware/boards/175/MotoNav/src/core/FirmwareConfig.h"
+            source.parent.mkdir(parents=True)
+            source.write_text('#define FW_VERSION "v7.12.9-junction.11"\n')
+            (source.parents[2] / 'MotoNav.ino').write_text('// structured entry point\n')
+            out = root / 'firmware/dist/175/panel0'
+            out.mkdir(parents=True)
+            app = bytes([0xE9]) + b'generic application'
+            entries = []
+            for name, data in [('new_app_0x10000.bin', app), ('new_full_0x0.bin', bytes(0x10000) + app)]:
+                (out / name).write_bytes(data)
+                entries.append({'file': name, 'bytes': len(data), 'sha256': hashlib.sha256(data).hexdigest()})
+            (out / 'new_manifest.json').write_text(json.dumps({'firmware': '7.12.9-junction.11', 'board': flash.BOARD, 'files': entries}))
+            version, _ = flash.validate_images(root)
+            self.assertEqual(version, '7.12.9-junction.11')
+            source.unlink()
+            (source.parents[2] / 'MotoNav.ino').unlink()
+            (root / 'firmware/RELEASE_VERSION').write_text('7.12.9-junction.11\n')
+            version, _ = flash.validate_images(root)
+            self.assertEqual(version, '7.12.9-junction.11')
+
     def test_upgrade_and_full_addresses(self):
         upgrade = flash.flash_command("esptool", "port", Path("app.bin"))
         full = flash.flash_command("esptool", "port", Path("full.bin"), True)

@@ -86,7 +86,7 @@ import androidx.appcompat.app.AppCompatActivity
  *   v4.4.2 导入分享路线支持高德摩托车路线；修复手机上卡在高德跳转页（callAPP）读不出路线
  *   v4.4.3 导入失败时显示 App 版本和完整网址，文字可以长按复制
  *   v4.4.4 修复手机上读不出分享路线：从高德跳转页的 shorturl&r= 参数里取路线
- *   v4.5  按分享路线导航时：偏航后只用前方的途经点重新规划（不会被拽回去补点）；原路线画成橙色细线 
+ *   v4.5  按分享路线导航时：偏航后只用前方的途经点重新规划（不会被拽回去补点）；原路线画成橙色细线
  *         显示在导航页和圆屏上（配合固件 v4.4）
  *   v4.6  蓝牙请求 2M 模式（大块数据传得更快，配合固件 v4.5）；调试区显示蓝牙模式和实测传输速度
  *   v4.7  巡航模式（首页“巡航模式”按钮，不设目的地也显示小地图、车速、电子眼、限速）；道路安全提示
@@ -146,7 +146,7 @@ import androidx.appcompat.app.AppCompatActivity
  *         设置分成「圆屏显示 / 导航语音 / 圆屏设置 / 地图 Key」四组，可折叠，收起时显示一行当前设置；
  *         调试信息、测试按钮、屏幕速度、地图来源、帧率等挪进「开发者选项」，默认隐藏（连点 5 下版本号打开）
  */
-const val APP_VERSION = "v8.3.23-webmotor.4"
+const val APP_VERSION = "v8.3.26"
 
 class MainActivity : AppCompatActivity() {
     // ---------------- 配色（罪恶都市夜景：深紫黑底、霓虹粉、青色） ----------------
@@ -351,6 +351,7 @@ class MainActivity : AppCompatActivity() {
 
     // ================= v6.3 首页搜索目的地 =================
 
+    private var directRouteMode = LocalRouting.DRIVE
     private var searchInput: EditText? = null
     private var homeKw = ""
     private val homeSearchRun = Runnable { homeSearch(homeKw) }
@@ -359,13 +360,19 @@ class MainActivity : AppCompatActivity() {
     /** 去哪儿：搜索框 + 搜索按钮，下面是搜索结果；没输入时显示“粘贴高德分享的路线”和“最近去过” */
     private fun searchCard(): View {
         val card = card()
-        card.addView(label("网页摩托车规划（实验）", 18f, CYAN, bold = true).apply {
+        card.addView(label("摩托车路线规划（实验）", 18f, CYAN, bold = true).apply {
             minHeight = dp(52); gravity = Gravity.CENTER_VERTICAL
-            setOnClickListener { startActivity(Intent(this@MainActivity, MotorWebActivity::class.java)) }
+            setOnClickListener { startActivity(Intent(this@MainActivity, MotorWebPlannerActivity::class.java)) }
         })
-        card.addView(label("内嵌高德网页选起终点 → 读取摩托路线 → 模拟或真实导航", 12f, SUB).apply {
+        card.addView(label("输入起点和目的地 → 对比摩托车路线 → 选择后导航", 12f, SUB).apply {
             setPadding(0, 0, 0, dp(12))
         })
+        directRouteMode = LocalRouting.normalize(getSharedPreferences("motonav", MODE_PRIVATE).getInt("direct_route_mode", LocalRouting.DRIVE))
+        card.addView(segmented(listOf(LocalRouting.DRIVE to "驾车", LocalRouting.BICYCLE to "自行车"), { directRouteMode }) {
+            directRouteMode = it
+            getSharedPreferences("motonav", MODE_PRIVATE).edit().putInt("direct_route_mode", it).apply()
+        }, lpMatch(top = 4))
+        card.addView(label("选择交通方式后搜索目的地；摩托车请用上方摩托车路线规划", 12f, SUB).apply { setPadding(0, dp(6), 0, dp(10)) })
         card.addView(label("去哪儿", 17f, TEXT, bold = true).apply { setPadding(0, 0, 0, dp(12)) })
         val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
         val input = EditText(this).apply {
@@ -522,6 +529,7 @@ class MainActivity : AppCompatActivity() {
         hideKeyboard()
         startActivity(Intent(this, RoutePlanActivity::class.java)
             .putExtra(RoutePlanActivity.EXTRA_FROM_HOME, true)
+            .putExtra(RoutePlanActivity.EXTRA_MODE, directRouteMode)
             .putExtra(RoutePlanActivity.EXTRA_NAME, name)
             .putExtra(RoutePlanActivity.EXTRA_ADDR, addr)
             .putExtra(RoutePlanActivity.EXTRA_LAT, lat)
@@ -632,8 +640,9 @@ class MainActivity : AppCompatActivity() {
             val searching = BleLink.status.contains("搜索") || BleLink.status.contains("连接…") || BleLink.status.contains("正在")
             setDot(dot, if (conn && BleLink.verified) GREEN else if (conn || searching) AMBER else RED)
             title.text = when {
-                conn -> BleLink.screenName.ifEmpty { "圆屏" } + " 已连接"
-                searching -> "正在连接圆屏…"
+                conn && BleLink.verified -> BleLink.screenName.ifEmpty { "圆屏" } + " 已连接"
+                conn -> "正在确认圆屏配对…"
+                searching -> BleLink.status
                 else -> "圆屏未连接"
             }
             sub.setTextColor(if (BleLink.needUnbond) AMBER else SUB)

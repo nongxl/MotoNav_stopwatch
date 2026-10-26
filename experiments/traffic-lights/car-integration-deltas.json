@@ -1,0 +1,68 @@
+{
+  "providerSHA256": "f0fe164279a6d60bd83d926a32d47f335f044faf9c0d37564b49655e95db0141",
+  "files": [
+    {
+      "path": "nm.smali",
+      "beforeSHA256": "20417a93ee9c914b25d88951aaf4270003b47b5ea84f6dcb93d615bcbf9f64f9",
+      "afterSHA256": "33623b323453bd1165eccc6437069410ff679e8865f5de9363805eb5f39e13b4",
+      "edits": [
+        {
+          "start": 327,
+          "end": 327,
+          "old": [],
+          "new": [
+            "\n",
+            "    invoke-static {p2, v0}, Lcom/yuminaga/motonav/FusionCarUi;->maskProviderFloat(Landroid/view/View;Landroid/view/WindowManager$LayoutParams;)V\n"
+          ]
+        }
+      ]
+    },
+    {
+      "path": "oo.smali",
+      "beforeSHA256": "86caffc556dd4b68dd8d4883ab305299e65a9731eb8726825e6e16fd5bc261c9",
+      "afterSHA256": "e6fc73df47c35e9c3c554915dc91a45740026d76bae21966d7d7fff6a4def219",
+      "edits": [
+        {
+          "start": 47,
+          "end": 47,
+          "old": [],
+          "new": [
+            "\n",
+            "    iget-object v0, p0, Loo;->d:Lcom/autonavi/amapauto/jni/protocol/data/GuideInfoProtocolData;\n",
+            "\n",
+            "    invoke-static {v0}, Lcom/yuminaga/motonav/CarEngineTap;->guide(Ljava/lang/Object;)V\n"
+          ]
+        }
+      ]
+    },
+    {
+      "path": "com/autonavi/amapauto/background/AutoBackgroundService.smali",
+      "beforeSHA256": "8741f6c4259bc691aa6708e68c56ee4fb0a502746aa609d48a747c4e79d76b0f",
+      "afterSHA256": "3176c2df3f90bb6aab04a58b2d989c0cb82265138fcb4106f045c23f696eac6e",
+      "edits": [
+        {
+          "start": 323,
+          "end": 323,
+          "old": [],
+          "new": [
+            "    invoke-static {p0, v1}, Lcom/yuminaga/motonav/FusionCarUi;->notification(Landroid/content/Context;Landroid/app/Notification;)Landroid/app/Notification;\n",
+            "\n",
+            "    move-result-object v1\n",
+            "\n"
+          ]
+        },
+        {
+          "start": 498,
+          "end": 498,
+          "old": [],
+          "new": [
+            "\n",
+            "    move-result-object v0\n",
+            "\n",
+            "    invoke-static {p0, v0}, Lcom/yuminaga/motonav/FusionCarUi;->notification(Landroid/content/Context;Landroid/app/Notification;)Landroid/app/Notification;\n"
+          ]
+        }
+      ]
+    }
+  ]
+}

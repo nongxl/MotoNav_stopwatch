@@ -1,6 +1,7 @@
 package com.example.motonav
 
 import android.net.Uri
+import android.webkit.CookieManager
 import org.json.JSONObject
 import java.net.HttpURLConnection
 import java.net.URL
@@ -89,6 +90,8 @@ object WebMotorRoutes {
     }
 
     fun load(request: MotorRequest): List<WebMotorRoute> {
+        require(MotorTrack.valid(request.start.lat, request.start.lng) && MotorTrack.valid(request.end.lat, request.end.lng)) { "起终点坐标无效" }
+        if (Thread.currentThread().isInterrupted) throw java.io.InterruptedIOException("规划已取消")
         val uri = Uri.parse("https://amap-pc-ssr.amap.com/ssr/api/getMotorRoutePlan").buildUpon()
             .appendQueryParameter("fromX", request.start.lng.toString()).appendQueryParameter("fromY", request.start.lat.toString())
             .appendQueryParameter("toX", request.end.lng.toString()).appendQueryParameter("toY", request.end.lat.toString())
@@ -102,12 +105,22 @@ object WebMotorRoutes {
         connection.instanceFollowRedirects = false
         connection.setRequestProperty("User-Agent", UA)
         connection.setRequestProperty("Referer", "https://www.amap.com/")
+        // Share only cookies scoped by Android to this exact HTTPS service. Never export or log them.
+        val cookies = CookieManager.getInstance()
+        cookies.getCookie(uri.toString())?.takeIf { it.isNotBlank() }?.let { connection.setRequestProperty("Cookie", it) }
         try {
-            require(connection.responseCode == 200) { "高德网页算路失败（HTTP ${connection.responseCode}），请在网页重试。" }
+            val status = connection.responseCode
+            connection.headerFields.entries.filter { it.key.equals("Set-Cookie", true) }.flatMap { it.value.orEmpty() }
+                .forEach { cookies.setCookie(uri.toString(), it) }
+            cookies.flush()
+            require(status != 401 && status != 403) { "高德要求登录或网页验证" }
+            require(status != 429) { "请求较频繁，请稍后再试" }
+            require(status == 200) { "高德网页算路失败（HTTP ${connection.responseCode}），请在网页重试。" }
             val data = connection.inputStream.use { stream ->
                 val out = java.io.ByteArrayOutputStream()
                 val buffer = ByteArray(8192)
                 while (true) {
+                    if (Thread.currentThread().isInterrupted) throw java.io.InterruptedIOException("规划已取消")
                     val count = stream.read(buffer)
                     if (count < 0) break
                     require(out.size() + count <= 8 * 1024 * 1024) { "路线数据过大" }

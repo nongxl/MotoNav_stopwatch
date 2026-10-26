@@ -11,8 +11,8 @@ final class MapWorkToken {
 }
 
 final class RouteOfflineMaps {
+    let style: Int
     let frame: MapGeo.Frame, plan: RouteMapPlan, source: Int, buildings: Bool
-    private let tdtKey: String
     private let worker = DispatchQueue(label: "motonav.route-offline", qos: .utility)
     private let token = MapWorkToken()
     private var jobToken: MapWorkToken?
@@ -23,15 +23,16 @@ final class RouteOfflineMaps {
     private var target = 0, busy = false
     private var retryAt = Date.distantPast
     private var timer: Timer?
-    init(frame: MapGeo.Frame, plan: RouteMapPlan, source: Int, buildings: Bool, tdtKey: String,
+    init(frame: MapGeo.Frame, plan: RouteMapPlan, source: Int, buildings: Bool,
          foregroundBusy: @escaping () -> Bool, onReady: @escaping (RouteMapPlan.Node) -> Void, onStatus: @escaping (String) -> Void) {
-        self.frame = frame; self.plan = plan; self.source = source; self.buildings = buildings; self.tdtKey = tdtKey
+        self.style = Settings.shared.theme
+        self.frame = frame; self.plan = plan; self.source = source; self.buildings = buildings
         self.foregroundBusy = foregroundBusy; self.onReady = onReady; self.onStatus = onStatus
         ready = [Bool](repeating: false, count: plan.nodes.count); baseReady = ready
     }
     func read(_ node: RouteMapPlan.Node) -> Data? {
-        RouteMapCache.shared.read(frame: frame, source: source, buildings: buildings, node: node)
-            ?? (buildings ? RouteMapCache.shared.read(frame: frame, source: source, buildings: false, node: node) : nil)
+        RouteMapCache.shared.read(frame: frame, source: source, buildings: buildings, node: node, style: style)
+            ?? (buildings ? RouteMapCache.shared.read(frame: frame, source: source, buildings: false, node: node, style: style) : nil)
     }
     func update(_ index: Int) { target = max(0, min(plan.nodes.count - 1, index)) }
     func start() {
@@ -40,8 +41,8 @@ final class RouteOfflineMaps {
             var done = [Bool](repeating: false, count: self.plan.nodes.count), base = done
             for (i, node) in self.plan.nodes.enumerated() {
                 if self.token.isCancelled { return }
-                done[i] = RouteMapCache.shared.read(frame: self.frame, source: self.source, buildings: self.buildings, node: node) != nil
-                base[i] = done[i] || RouteMapCache.shared.read(frame: self.frame, source: self.source, buildings: false, node: node) != nil
+                done[i] = RouteMapCache.shared.read(frame: self.frame, source: self.source, buildings: self.buildings, node: node, style: self.style) != nil
+                base[i] = done[i] || RouteMapCache.shared.read(frame: self.frame, source: self.source, buildings: false, node: node, style: self.style) != nil
             }
             DispatchQueue.main.async {
                 guard !self.token.isCancelled else { return }
@@ -79,17 +80,17 @@ final class RouteOfflineMaps {
                         shouldCancel: { self.token.isCancelled || job.isCancelled }, onBaseReady: { base in
                             guard !self.token.isCancelled else { return }
                             do {
-                                try RouteMapCache.shared.store(base, frame: self.frame, source: self.source, node: node)
+                                try RouteMapCache.shared.store(base, frame: self.frame, source: self.source, node: node, style: self.style)
                                 DispatchQueue.main.async { if !self.token.isCancelled { self.baseReady[i] = true; self.onReady(node) } }
                             } catch { /* The final store reports storage errors in onStatus. */ }
                         }, onBuildingStatus: { message in
                             DispatchQueue.main.async { if !self.token.isCancelled { self.onStatus(message) } }
-                        }).bytes
+                        }, style: self.style).bytes
                 } else {
-                    packet = try TdtRaster.build(self.frame, cx: node.x, cy: node.y, half: 1200, key: self.tdtKey).bytes
+                    throw MapProcessingError.invalid("沿线预下载仅支持高德底图")
                 }
                 if self.token.isCancelled { throw MapProcessingError.cancelled }
-                try RouteMapCache.shared.store(packet, frame: self.frame, source: self.source, node: node)
+                try RouteMapCache.shared.store(packet, frame: self.frame, source: self.source, node: node, style: self.style)
                 return packet
             }
             DispatchQueue.main.async {

@@ -234,7 +234,7 @@ class NavActivity : AppCompatActivity() {
             NaviVoice.muted = muted
             NaviVoice.applyTo(n)
             ShareGuide.naviType = if (emulate) 2 else 1               // v4.5
-            Refl.call(n, "setMultipleRouteNaviMode", ShareGuide.route?.isTravel != true)
+            Refl.call(n, "setMultipleRouteNaviMode", ShareGuide.route?.isTravel != true && NaviBridge.directRouteMode != LocalRouting.BICYCLE)
             if (emulate) n.setEmulatorNaviSpeed(emuSpeeds[emuIdx])
             if (!NaviBridge.beginNavigation(emulate)) {
                 Toast.makeText(this,"导航会话已结束，请返回重新规划路线",Toast.LENGTH_LONG).show()

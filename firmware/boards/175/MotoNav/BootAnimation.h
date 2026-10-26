@@ -4,7 +4,7 @@
 #include <stdint.h>
 #include <math.h>
 #include <string.h>
-#include "BrandLogos.h"
+#include "resources/BrandLogos.h"
 
 namespace BootAnimation {
 static const int Size = 466;

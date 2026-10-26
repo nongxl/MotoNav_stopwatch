@@ -21,6 +21,8 @@ final class AmapCaptureHost: NSObject {
     private var emptyBuildingChecks = 0
     private var timer: Timer?
     private var observer: NSObjectProtocol?
+    private var satelliteCapture=false
+    private var mpp: Double { satelliteCapture ? 3.5 : 2.0 }
 
     func attach(_ view: UIView) {
         container = view
@@ -73,17 +75,20 @@ final class AmapCaptureHost: NSObject {
     func mapLoadFailed(_ map: MAMapView, error: NSError) {
         finish(.failure(MapProcessingError.invalid("高德地图加载失败：\(error.domain) \(error.code)")))
     }
-    func capture(_ frame: MapGeo.Frame, x: Int, y: Int, size n: Int, completion: @escaping (Result<Shot, Error>) -> Void) {
+    func capture(_ frame: MapGeo.Frame, x: Int, y: Int, size n: Int, satellite: Bool = false, style: Int = 1, completion: @escaping (Result<Shot, Error>) -> Void) {
         precondition(Thread.isMainThread)
         guard pending == nil else { completion(.failure(MapProcessingError.invalid("高德截图正在处理上一块"))); return }
         do {
             let m = try ensureMap(size: CGFloat(AmapCapturePolicy.renderSize(for: n)))
+            satelliteCapture=satellite
+            m.mapType = satellite ? .satellite : .standard
+            m.isShowsLabels = style == 0
             pending = completion; reference = nil; referenceProjection = nil; emptyBuildingChecks = 0; started = Date(); serial += 1
             let id = serial
             m.isShowsBuildings = false; m.rotationDegree = 0; m.cameraDegree = n == 600 ? 0.05 : 0
             let margin = n == 600 ? 20.0 : 100.0
-            let north = frame.lat(Double(y) + margin), south = frame.lat(Double(y - n * 2) - margin)
-            let west = frame.lng(Double(x) - margin), east = frame.lng(Double(x + n * 2) + margin)
+            let north = frame.lat(Double(y) + margin), south = frame.lat(Double(y) - Double(n)*self.mpp - margin)
+            let west = frame.lng(Double(x) - margin), east = frame.lng(Double(x) + Double(n)*self.mpp + margin)
             let nw = MAMapPointForCoordinate(CLLocationCoordinate2D(latitude: north, longitude: west))
             let se = MAMapPointForCoordinate(CLLocationCoordinate2D(latitude: south, longitude: east))
             let rect = MAMapRectMake(min(nw.x, se.x), min(nw.y, se.y), abs(se.x - nw.x), abs(se.y - nw.y))
@@ -118,11 +123,11 @@ final class AmapCaptureHost: NSObject {
                     guard width <= 5000, height <= 5000, width > 0, height > 0,
                           abs(m.rotationDegree) < 0.1, abs(m.cameraDegree) < 0.1 else { throw MapProcessingError.invalid("高德截图尺寸或方向异常") }
                     if n == 600, m.zoomLevel < 17 { throw MapProcessingError.invalid("建筑取图缩放级别不足") }
-                    let north = frame.lat(Double(y)), south = frame.lat(Double(y - n * 2))
+                    let north = frame.lat(Double(y)), south = frame.lat(Double(y) - Double(n)*self.mpp)
                     let tl = m.convert(CLLocationCoordinate2D(latitude: north, longitude: frame.lng(Double(x))), toPointTo: m)
-                    let tr = m.convert(CLLocationCoordinate2D(latitude: north, longitude: frame.lng(Double(x + n * 2))), toPointTo: m)
+                    let tr = m.convert(CLLocationCoordinate2D(latitude: north, longitude: frame.lng(Double(x) + Double(n)*self.mpp)), toPointTo: m)
                     let bl = m.convert(CLLocationCoordinate2D(latitude: south, longitude: frame.lng(Double(x))), toPointTo: m)
-                    let br = m.convert(CLLocationCoordinate2D(latitude: south, longitude: frame.lng(Double(x + n * 2))), toPointTo: m)
+                    let br = m.convert(CLLocationCoordinate2D(latitude: south, longitude: frame.lng(Double(x) + Double(n)*self.mpp)), toPointTo: m)
                     let sx = Double(width) / Double(m.bounds.width), sy = Double(height) / Double(m.bounds.height)
                     guard abs(tl.y - tr.y) * sy <= 2, abs(tl.x - bl.x) * sx <= 2,
                           abs(bl.y - br.y) * sy <= 2, abs(tr.x - br.x) * sx <= 2,

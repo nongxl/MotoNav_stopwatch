@@ -13,12 +13,14 @@ enum RasterPacket {
     static func valid(_ data: Data, frame: Int, x: Int, y: Int) -> Bool {
         let b = [UInt8](data)
         guard b.count >= 17, b.count <= 480000, u16(b, 0) == frame, i32(b, 2) == x, i32(b, 6) == y,
-              u16(b, 10) == size, u16(b, 12) == size, [2000, 2000 | flag].contains(u16(b, 14)) else { return false }
-        var pos = 16, pixels = 0
+              u16(b, 10) == size, u16(b, 12) == size, [2000, 2000 | flag, 2000 | 0x8000].contains(u16(b, 14)) else { return false }
+        let customPalette = u16(b, 14) & 0x8000 != 0
+        guard !customPalette || b.count >= 49 else { return false }
+        var pos = customPalette ? 48 : 16, pixels = 0
         let building = u16(b, 14) == (2000 | flag)
         while pos < b.count && pixels < size * size {
             let v = Int(b[pos]); pos += 1
-            if v & 15 > (building ? 7 : 3) { return false }
+            if v & 15 > (customPalette ? 15 : building ? 7 : 3) { return false }
             var run = (v >> 4) + 1
             if v >> 4 == 15 {
                 guard pos < b.count else { return false }
@@ -48,7 +50,7 @@ enum RasterPacket {
     static func decode(_ data: Data) -> [UInt8]? {
         guard valid(data) else { return nil }
         let b = [UInt8](data)
-        var out = [UInt8](repeating: 0, count: size * size), p = 16, k = 0
+        var out = [UInt8](repeating: 0, count: size * size), p = u16(b, 14) & 0x8000 != 0 ? 48 : 16, k = 0
         while p < b.count {
             let v = b[p]; p += 1
             var run = Int(v >> 4) + 1

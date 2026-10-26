@@ -55,6 +55,8 @@
             </intent-filter>
         </activity>
 
+        <activity android:name=".MotorWebPlannerActivity" android:exported="false"
+            android:windowSoftInputMode="adjustResize" />
         <activity android:name=".MotorWebActivity" android:exported="false"
             android:windowSoftInputMode="adjustResize" />
         <activity android:name=".MotorWebNavActivity" android:exported="false" />

@@ -4,7 +4,7 @@ import Foundation
 enum AmapSdkRaster {
     private static let lease = NSLock()
     static func build(_ f: MapGeo.Frame, cx: Double, cy: Double, includeBuildings: Bool,
-                      shouldCancel: @escaping () -> Bool, onBaseReady: ((Data) -> Void)? = nil, onBuildingStatus: ((String) -> Void)? = nil) throws -> TdtRaster.Result {
+                      shouldCancel: @escaping () -> Bool, onBaseReady: ((Data) -> Void)? = nil, onBuildingStatus: ((String) -> Void)? = nil, satellite: Bool = false, style: Int = 1) throws -> RasterResult {
         precondition(!Thread.isMainThread)
         func check() throws { if shouldCancel() { throw MapProcessingError.cancelled } }
         while !lease.try() { try check(); Thread.sleep(forTimeInterval: 0.1) }
@@ -18,7 +18,7 @@ enum AmapSdkRaster {
             let box = CaptureResultBox(), sem = DispatchSemaphore(value: 0)
             DispatchQueue.main.async {
                 if shouldCancel() { box.set(.failure(MapProcessingError.cancelled)); sem.signal(); return }
-                AmapCaptureHost.shared.capture(f, x: x, y: y, size: n) { result in box.set(result); sem.signal() }
+                AmapCaptureHost.shared.capture(f, x: x, y: y, size: n, satellite: satellite, style: style) { result in box.set(result); sem.signal() }
             }
             var elapsed = 0.0
             do {
@@ -41,9 +41,22 @@ enum AmapSdkRaster {
                 throw error
             }
         }
-        let n = 1200, x = Int((cx - 1200).rounded()), y = Int((cy + 1200).rounded())
+        let half = satellite ? 700.0 : 1200.0
+        let n = satellite ? 400 : 1200, x = Int((cx - half).rounded()), y = Int((cy + half).rounded())
         let raw = try take(x: x, y: y, n: n)
         guard stride(from: 0, to: raw.count, by: 7).contains(where: { raw[$0] != raw[0] }) else { throw MapProcessingError.invalid("高德返回纯色底图") }
+        if satellite { return try SatelliteRaster.encode(f,cx: cx,cy: cy,half: half,raw: raw,shouldCancel: shouldCancel) }
+        if style == 0 {
+            let q = MapStyles.original(raw)
+            let packet = MapGeo.encodeRaster(frameId: f.id, x0: x, y0: y, w: n, h: n, mmPerPx: 2000, idx: q.indices, pal: q.palette)
+            guard packet.count <= 480000, RasterPacket.valid(packet) else { throw MapProcessingError.invalid("高德原版底图过大") }
+            onBaseReady?(packet); return RasterResult(bytes: packet, tiles: 1, fromCache: 0)
+        }
+        if style == 5 {
+            let packet = MapGeo.encodeRaster(frameId: f.id, x0: x, y0: y, w: n, h: n, mmPerPx: 2000, idx: MapStyles.minimal(raw, size: n))
+            guard RasterPacket.valid(packet) else { throw MapProcessingError.invalid("黑白道路数据无效") }
+            onBaseReady?(packet); return RasterResult(bytes: packet, tiles: 1, fromCache: 0)
+        }
         var colors: [UInt32: UInt8] = [:]
         let classified = raw.map { c -> UInt8 in
             if let value = colors[c] { return value }
@@ -56,7 +69,7 @@ enum AmapSdkRaster {
         try check()
         MapPipelineTrace.event("base-ready", ["job": job, "bytes": base.count])
         onBaseReady?(base)
-        guard includeBuildings else { return TdtRaster.Result(bytes: base, tiles: 1, fromCache: 0) }
+        guard includeBuildings else { return RasterResult(bytes: base, tiles: 1, fromCache: 0) }
         onBuildingStatus?("正在从高德近景截图提取建筑轮廓…")
         do {
             var roofs = raw
@@ -71,14 +84,14 @@ enum AmapSdkRaster {
             MapPipelineTrace.event("buildings-ready", ["job": job, "components": buildings.buildings, "pixels": buildings.roofPixels])
             guard AmapCapturePolicy.completed(buildings) else {
                 onBuildingStatus?("未取得建筑轮廓，保留普通底图并稍后重试")
-                return TdtRaster.Result(bytes: base, tiles: 5, fromCache: 0)
+                return RasterResult(bytes: base, tiles: 5, fromCache: 0)
             }
             onBuildingStatus?("高德建筑：\(buildings.buildings) 片轮廓，\(buildings.roofPixels) 个建筑像素")
             let packet = MapGeo.encodeRaster(frameId: f.id, x0: x, y0: y, w: n, h: n, mmPerPx: 2000 | RasterPacket.flag, idx: buildings.pixels)
-            guard RasterPacket.valid(packet) else { onBuildingStatus?("建筑地图数据超出限制，保留普通底图"); return TdtRaster.Result(bytes: base, tiles: 1, fromCache: 0) }
-            return TdtRaster.Result(bytes: packet, tiles: 5, fromCache: 0)
+            guard RasterPacket.valid(packet) else { onBuildingStatus?("建筑地图数据超出限制，保留普通底图"); return RasterResult(bytes: base, tiles: 1, fromCache: 0) }
+            return RasterResult(bytes: packet, tiles: 5, fromCache: 0)
         } catch MapProcessingError.cancelled { throw MapProcessingError.cancelled }
-        catch { onBuildingStatus?("建筑提取未完成：\(error.localizedDescription)"); return TdtRaster.Result(bytes: base, tiles: 1, fromCache: 0) }
+        catch { onBuildingStatus?("建筑提取未完成：\(error.localizedDescription)"); return RasterResult(bytes: base, tiles: 1, fromCache: 0) }
     }
 }
 

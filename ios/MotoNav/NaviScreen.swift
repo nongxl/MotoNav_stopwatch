@@ -109,6 +109,7 @@ struct NaviScreen: View {
         .confirmationDialog("导航选项", isPresented: $drive.showMore, titleVisibility: .hidden) {
             Button(drive.isOverview ? "回到车头跟随" : "看全程") { drive.toggleOverview() }
             Button(drive.trafficOn ? "关掉路况颜色" : "显示路况颜色") { drive.toggleTraffic() }
+            Button("返回首页修改设置") { dismiss() }
             Button("退出导航", role: .destructive) { exitNavi() }
             Button("取消", role: .cancel) {}
         }
@@ -132,6 +133,7 @@ struct NaviScreen: View {
                 chip("speedometer", "\(navi.emuSpeed) km/h", on: false) { navi.cycleEmuSpeed() }
             }
             Spacer()
+            chip("gearshape", "设置", on: false) { dismiss() }
         }
         .padding(.horizontal, 24)
     }

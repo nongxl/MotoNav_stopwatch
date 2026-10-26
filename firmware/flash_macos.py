@@ -34,11 +34,18 @@ def find_tool():
 
 
 def validate_images(root=ROOT):
-    source = root / "firmware/boards/175/MotoNav/MotoNav.ino"
-    match = re.search(r'^#define FW_VERSION "v([^\"]+)"', source.read_text(), re.MULTILINE)
-    if not match:
-        raise ValueError("无法读取当前固件版本。")
-    version = match.group(1)
+    source = root / "firmware/boards/175/MotoNav/src/core/FirmwareConfig.h"
+    if not source.exists():
+        source = root / "firmware/boards/175/MotoNav/MotoNav.ino"
+    if source.exists():
+        match = re.search(r'^#define FW_VERSION "v([^\"]+)"', source.read_text(), re.MULTILINE)
+        if not match:
+            raise ValueError("无法读取当前固件版本。")
+        version = match.group(1)
+    else:
+        version = (root / 'firmware/RELEASE_VERSION').read_text().strip()
+        if not re.fullmatch(r'\d+\.\d+\.\d+(?:-[A-Za-z0-9][A-Za-z0-9.-]*)?', version):
+            raise ValueError("固件版本标记无效。")
     folder = root / "firmware/dist/175/panel0"
     manifests = sorted(folder.glob("*_manifest.json"))
     for path in manifests:

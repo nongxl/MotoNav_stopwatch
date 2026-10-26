@@ -3,7 +3,7 @@ import Foundation
 /// 版本：跟随 App 版本（见 Config.swift，iOS v0.2 新增）
 ///
 /// 小地图用到的纯计算部分（和安卓版 MapGeo.kt 一一对应，打包格式必须和固件一致）：
-/// - WGS-84（天地图、OpenStreetMap 用的坐标）和 GCJ-02（高德用的坐标）互相换算
+/// - WGS-84（GPS 原生坐标）和 GCJ-02（高德用的坐标）互相换算
 /// - 经纬度 ↔ 平面米坐标（以所在区域的固定点为原点）
 /// - 折线简化（Douglas-Peucker）、多边形拼接、裁剪
 /// - 把地图块、导航路线、图片地图打包成发给圆屏的二进制数据
@@ -72,7 +72,7 @@ enum MapGeo {
         func lat(_ y: Double) -> Double { refLat + y / ky }
     }
 
-    // MARK: - 地图要素（OpenStreetMap 线条地图）
+    // MARK: - 地图要素（通用几何数据）
     // 道路等级（线）：1 高速/快速路，2 主干道，3 次干道，4 支路/小区路，5 辅路/匝道
     // 面：10 绿地公园，11 水面
     static let CLS_PARK = 10
@@ -313,7 +313,7 @@ enum MapGeo {
         return b.b
     }
 
-    // MARK: - 天地图图片地图
+    // MARK: - 高德图片地图
     // 颜色类别（圆屏按同样编号上色）：0 街区，1 道路，2 绿地，3 水面
     static let PX_BLOCK: UInt8 = 0
     static let PX_ROAD: UInt8 = 1
@@ -341,7 +341,7 @@ enum MapGeo {
         return best
     }
 
-    /// 把天地图底图的一个像素颜色归类
+    /// 把高德底图的一个像素颜色归类
     static func classifyPixel(_ c: UInt32, _ bgLum: Int) -> UInt8 {
         let r = Int((c >> 16) & 255), g = Int((c >> 8) & 255), b = Int(c & 255)
         let mx = max(r, g, b), mn = min(r, g, b)

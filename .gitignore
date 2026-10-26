@@ -48,3 +48,8 @@ release/
 
 # IDE
 .idea/
+
+*.pk8
+*.x509.pem
+*.idsig
+*.class

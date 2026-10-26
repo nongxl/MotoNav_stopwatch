@@ -74,6 +74,7 @@ object NaviBridge {
     private var tripMaxKmh = 0
     private var tripLat = Double.NaN; private var tripLng = Double.NaN
     /** v7.9 这次导航的途经点是不是用户自己加的（按高德分享路线走时，途经点是 App 自动挑的，到了不放特效） */
+    @Volatile var directRouteMode = LocalRouting.DRIVE
     @Volatile var realWaypoints = false
     @Volatile var uiHasInfo = false           // 已经收到过导航信息
     @Volatile var uiLightDist = -1            // v3.1 前方红绿灯距离（米，-1 = 300 米内没有）

@@ -8,7 +8,7 @@ final class Settings: ObservableObject {
     private let ud = UserDefaults.standard
 
     /// 风格编号（和固件一样）；列表顺序
-    static let themeOrder = [1, 2, 0, 3, 4, 5, 6, 7, 8, 9, 10, 11]
+    static let themeOrder = [1, 0, 5, 11]
     static func themeName(_ t: Int) -> String {
         switch t {
         case 11: return "龙珠雷达"
@@ -21,16 +21,16 @@ final class Settings: ObservableObject {
     static func themeDesc(_ t: Int) -> String {
         switch t {
         case 11: return "绿色雷达、路线与目标；不下载底图"
-        case 0: return "浅色地面、深色道路"
+        case 0: return "高德默认底图与标注，按圆屏16色传输"
         case 2: return "深色地面、浅色道路、紫色路线"
         case 3: return "黑底青色道路、品红路线，夜里最酷"
         case 4: return "米黄纸色，白天太阳下最清楚；夜间配色时自动换成霓虹"
-        case 5: return "黑底灰路，只有路线是白色，最不分心"
+        case 5: return "独立黑白道路网和导航路线，不含建筑、绿地、水面和文字"
         case 6: return "深蓝底 + 跟着地图走的网格"
         case 7: return "老掌机的 4 色绿屏，大像素，帧率更高"
         case 8: return "墨绿单色 + 转动的扫描线和距离圈"
         case 9: return "六边形网格、罗盘刻度、目的地菱形脉冲"
-        case 10: return "天地图卫星照片（数据大，范围小一些；要填天地图 key）"
+        case 10: return "高德卫星照片（数据大，范围小一些；要填高德 key）"
         default: return "暖沙色街区、粉紫路线（默认）"
         }
     }
@@ -53,7 +53,7 @@ final class Settings: ObservableObject {
             ud.set(theme, forKey: "map_theme")
             BleLink.shared.send("#t,\(theme)")
             // 卫星图和普通地图的数据不一样：切换时重新下载
-            if (oldValue == MapFeeder.THEME_SAT) != (theme == MapFeeder.THEME_SAT) || (oldValue == 11) != (theme == 11) { MapFeeder.shared.resetChunk() }
+            if oldValue != theme { MapFeeder.shared.resetChunk() }
         }
     }
     // iOS v0.2 小地图
@@ -65,11 +65,10 @@ final class Settings: ObservableObject {
             if mapOn { MapFeeder.shared.resendAll() }
         }
     }
-    /// 地图来源：0 自动（天地图优先，失败换 OpenStreetMap），1 天地图，2 OpenStreetMap
     @Published var buildings: Bool = MapDefaults.buildings() {
         didSet { ud.set(buildings, forKey: "map_buildings"); MapFeeder.shared.resetChunk() }
     }
-    @Published var mapSource: Int { didSet { ud.set(mapSource, forKey: "map_src"); MapFeeder.shared.resetChunk() } }
+    @Published private(set) var mapSource: Int { didSet { ud.set(mapSource, forKey: "map_src"); MapFeeder.shared.resetChunk() } }
     /// 走过的路线：1 变灰，2 擦除
     @Published var trail: Int { didSet { ud.set(trail, forKey: "map_trail"); BleLink.shared.send("#r,\(trail)") } }
     /// 清爽模式：小地图保留，去掉红绿灯、电子眼、安全提示、测速牌和行程信息
@@ -130,22 +129,20 @@ final class Settings: ObservableObject {
             MusicBridge.shared.refresh(force: true)
         }
     }
+    @Published var progressRing = UserDefaults.standard.object(forKey: "trip_prog") as? Bool ?? true {
+        didSet { ud.set(progressRing,forKey:"trip_prog"); BleLink.shared.send(progressRing ? "#M1" : "#M0") }
+    }
+    @Published var leadMs = UserDefaults.standard.object(forKey: "lead_ms") as? Int ?? 300 {
+        didSet { ud.set(leadMs,forKey:"lead_ms"); BleLink.shared.send("#L\(leadMs)") }
+    }
     @Published var voiceMuted: Bool { didSet { ud.set(voiceMuted, forKey: "nav_muted") } }
 
     // Key 设置：用户在 App 里填自己的 key，只存在这台手机上。iOS v0.7 起代码里不再内置任何 key，没填时打开 App 会提醒
     /// 高德 key（iOS 平台，绑定这个 App 的 Bundle ID）：填好后 applyAmapKey() 马上交给高德
     @Published var amapKey: String { didSet { ud.set(amapKey.trimmingCharacters(in: .whitespacesAndNewlines), forKey: "key_amap") } }
-    /// 天地图 key：每次取底图时现读，改了马上按新 key 重新下载
-    @Published var tdtKey: String {
-        didSet {
-            ud.set(tdtKey.trimmingCharacters(in: .whitespacesAndNewlines), forKey: "key_tdt")
-            MapFeeder.shared.resetChunk()
-        }
-    }
     var amapKeyInUse: String { amapKey.trimmingCharacters(in: .whitespacesAndNewlines) }
-    var tdtKeyInUse: String { tdtKey.trimmingCharacters(in: .whitespacesAndNewlines) }
-    /// 高德或天地图 key 有一个没填（打开 App 时提醒）
-    var keysMissing: Bool { amapKeyInUse.isEmpty || ((mapSource == 1 || theme == 10) && tdtKeyInUse.isEmpty) }
+    /// 高德 key 没填（打开 App 时提醒）
+    var keysMissing: Bool { amapKeyInUse.isEmpty }
 
     /// 把高德 key 交给高德：搜索服务换成新 key 重建，导航用的 key 也一起换
     func applyAmapKey() {
@@ -163,8 +160,7 @@ final class Settings: ObservableObject {
 
     private init() {
         amapKey = ud.string(forKey: "key_amap") ?? ""
-        tdtKey = ud.string(forKey: "key_tdt") ?? ""
-        theme = ud.object(forKey: "map_theme") as? Int ?? 1
+        theme = [1, 0, 5, 11].contains(ud.integer(forKey: "map_theme")) && ud.object(forKey: "map_theme") != nil ? ud.integer(forKey: "map_theme") : 1
         rotationDeg = ud.object(forKey: "screen_rot_deg") as? Int
             ?? ((ud.object(forKey: "screen_rot") as? Int ?? 0) & 3) * 90   // 老版本只存了 0~3 档
         brightness = ud.object(forKey: "bright") as? Double ?? 200
@@ -178,7 +174,7 @@ final class Settings: ObservableObject {
         duck = ud.object(forKey: "voice_duck") as? Bool ?? true
         voiceMuted = ud.bool(forKey: "nav_muted")
         mapOn = ud.object(forKey: "map_on") as? Bool ?? true
-        mapSource = ud.object(forKey: "map_src") as? Int ?? 3
+        mapSource = MapDefaults.source(ud)
         trail = ud.object(forKey: "map_trail") as? Int ?? 1
         clean = ud.bool(forKey: "clean_mode")
     }
@@ -209,6 +205,8 @@ final class Settings: ObservableObject {
         b.send(curve ? "#Q,1" : "#Q,0")
         b.send(mapOn ? "#m,1" : "#m,0")
         b.send("#r,\(trail)")
+        b.send(progressRing ? "#M1" : "#M0")
+        b.send("#L\(leadMs)")
         b.send(clean ? "#w,1" : "#w,0")
     }
 

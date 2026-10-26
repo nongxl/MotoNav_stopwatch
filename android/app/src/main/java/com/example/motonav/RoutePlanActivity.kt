@@ -115,6 +115,9 @@ class RoutePlanActivity : AppCompatActivity() {
     private var importSeq = 0
 
     // 设置
+    private var routeMode = LocalRouting.DRIVE
+    private val bicycle: Boolean get() = shareRoute?.isTravel == true || (shareRoute == null && routeMode == LocalRouting.BICYCLE)
+    private lateinit var modeChip: TextView
     private var avoidHighway = true
     private var emulate = false
 
@@ -150,6 +153,8 @@ class RoutePlanActivity : AppCompatActivity() {
         MapFeeder.load(this)
         avoidHighway = getSharedPreferences("motonav", Context.MODE_PRIVATE).getBoolean("avoid_hw", true)
 
+        routeMode = LocalRouting.normalize(savedInstanceState?.getInt("direct_route_mode")
+            ?: intent.getIntExtra(EXTRA_MODE, getSharedPreferences("motonav", MODE_PRIVATE).getInt("direct_route_mode", LocalRouting.DRIVE)))
         // 地图铺满整个屏幕（包括状态栏下面），上下的卡片按系统栏留出空间
         window.statusBarColor = Color.TRANSPARENT
         window.navigationBarColor = S.CARD_SOLID
@@ -203,6 +208,7 @@ class RoutePlanActivity : AppCompatActivity() {
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
+        setIntent(intent)
         handleHomeIntent(intent)
     }
 
@@ -210,6 +216,8 @@ class RoutePlanActivity : AppCompatActivity() {
     private fun handleHomeIntent(i: Intent?): Boolean {
         if (i == null) return false
         fromHome = i.getBooleanExtra(EXTRA_FROM_HOME, false)
+        if (i.hasExtra(EXTRA_MODE)) routeMode = LocalRouting.normalize(i.getIntExtra(EXTRA_MODE, LocalRouting.DRIVE))
+        refreshMode()
         i.getStringExtra(EXTRA_SHARE)?.let { importShare(it); return true }      // v4.4 从高德分享过来的
         if (i.hasExtra(EXTRA_LAT)) {
             chooseDest(i.getStringExtra(EXTRA_NAME) ?: "目的地", i.getStringExtra(EXTRA_ADDR) ?: "",
@@ -221,6 +229,7 @@ class RoutePlanActivity : AppCompatActivity() {
 
     companion object {
         const val EXTRA_SHARE = "share_text"
+        const val EXTRA_MODE = "direct_route_mode"
         // v6.3 首页直接带目的地进来
         const val EXTRA_NAME = "dest_name"
         const val EXTRA_ADDR = "dest_addr"
@@ -631,6 +640,18 @@ class RoutePlanActivity : AppCompatActivity() {
             }
         }
         sheet.addView(favoriteButton,LinearLayout.LayoutParams(-1,-2))
+        modeChip = chip("交通方式：驾车") {
+            if (shareRoute == null) {
+                routeMode = if (routeMode == LocalRouting.BICYCLE) LocalRouting.DRIVE else LocalRouting.BICYCLE
+                intent.putExtra(EXTRA_MODE, routeMode)
+                getSharedPreferences("motonav", MODE_PRIVATE).edit().putInt("direct_route_mode",routeMode).apply()
+                if (bicycle && vias.isNotEmpty()) {
+                    clearVias(); Toast.makeText(this,"自行车采用直达规划，已清除途经点",Toast.LENGTH_LONG).show()
+                }
+                refreshMode(); refreshVias(); calculate()
+            }
+        }
+        sheet.addView(modeChip,LinearLayout.LayoutParams(-1,dp(38)))
         // v4.9 途经点一行：“途经：A → B”  [+ 途经点] [清除]
         viaRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
         viaText = TextView(this).apply {
@@ -682,6 +703,22 @@ class RoutePlanActivity : AppCompatActivity() {
         setOnClickListener { onClick() }
     }
 
+    private fun refreshMode() {
+        modeChip.text = if (shareRoute != null) "高德分享：${shareRoute?.kind}" else "交通方式：${if (bicycle) "自行车" else "驾车"} · 点此切换"
+        modeChip.isEnabled = shareRoute == null
+        modeChip.background = S.round(this,S.CARD2,12f,S.STROKE)
+        modeChip.setTextColor(S.CYAN)
+        hwChip.visibility = if (bicycle) View.GONE else View.VISIBLE
+    }
+
+    private fun availablePaths(): Map<Int, AMapNaviPath> {
+        val n = navi ?: return emptyMap()
+        return try {
+            if (bicycle) n.naviPath?.let { mapOf(0 to it) } ?: emptyMap()
+            else n.naviPaths ?: emptyMap()
+        } catch (_: Exception) { emptyMap() }
+    }
+
     private fun styleChips() {
         for ((c, on) in listOf(hwChip to avoidHighway, emuChip to emulate)) {
             c.background = S.round(this, if (on) Color.parseColor("#33FF4FB4") else S.CARD2, 16f, if (on) S.PINK else S.STROKE)
@@ -719,7 +756,7 @@ class RoutePlanActivity : AppCompatActivity() {
         if (share == null) clearShare()                 // v4.4 自己选的目的地：不再按分享的路线走
         clearVias()                                     // v4.9 新目的地：途经点清空
         shareRoute = share
-        hwChip.visibility = if (share?.isTravel == true) View.GONE else View.VISIBLE
+        refreshMode()
         amapShareBtn.visibility = if (!share?.sourceUrl.isNullOrBlank()) View.VISIBLE else View.GONE
         destName = name; destAddr = addr; destLat = lat; destLng = lng
         updateFavoriteButton()
@@ -743,6 +780,7 @@ class RoutePlanActivity : AppCompatActivity() {
     // ================= v4.9 途经点 =================
 
     private fun startViaSearch() {
+        if (bicycle) return
         if (vias.size >= 3) { Toast.makeText(this, "最多 3 个途经点", Toast.LENGTH_SHORT).show(); return }
         addingVia = true
         sheet.visibility = View.GONE
@@ -784,7 +822,7 @@ class RoutePlanActivity : AppCompatActivity() {
     private fun refreshVias() {
         for (m in viaMarkers) { try { m.remove() } catch (_: Throwable) {} }
         viaMarkers.clear()
-        viaRow.visibility = if (shareRoute != null) View.GONE else View.VISIBLE      // 分享的路线自带途经点
+        viaRow.visibility = if (shareRoute != null || bicycle) View.GONE else View.VISIBLE      // 分享的路线自带途经点
         viaText.text = if (vias.isEmpty()) "途经：无" else "途经：" + vias.joinToString(" → ") { it.name }
         viaClear.visibility = if (vias.isEmpty()) View.GONE else View.VISIBLE
         for ((i, v) in vias.withIndex()) {
@@ -851,35 +889,33 @@ class RoutePlanActivity : AppCompatActivity() {
         clearRoutes()
         calculating = true
         val seq = ++calcSeq
-        showStatus("正在规划路线…")
+        showStatus(if (bicycle) "正在规划自行车路线…" else "正在规划驾车路线…")
         NaviBridge.routeCallback = { ok, res -> if (seq == calcSeq) onRouteResult(ok, res) }
         val sr = shareRoute
+        NaviBridge.directRouteMode = if (bicycle) LocalRouting.BICYCLE else LocalRouting.DRIVE
         // v4.4 按分享的路线走：沿路挑途经点，不躲避拥堵（免得绕开原路线），只要一条路线
         val wps: ArrayList<NaviLatLng> = if (sr != null) ArrayList(if (sr.endpointsOnly) emptyList() else AmapShare.waypoints(sr, myLat, myLng))
             else ArrayList(vias.map { NaviLatLng(it.lat, it.lng) })                  // v4.9 自己加的途经点
-        NaviBridge.realWaypoints = sr == null && vias.isNotEmpty()                  // v7.9 到途经点放特效
+        NaviBridge.realWaypoints = !bicycle && sr == null && vias.isNotEmpty()                  // v7.9 到途经点放特效
         val strategy = try {
             if (sr != null) n.strategyConvert(false, avoidHighway, false, false, false)
             else n.strategyConvert(true, avoidHighway, false, false, true)
         } catch (_: Exception) { 10 }
-        val to = arrayListOf(NaviLatLng(destLat, destLng))
         if (sr != null) showStatus(if (sr.isTravel) "正在规划${sr.kind}路线…" else "正在按高德分享的路线规划（${wps.size} 个途经点）…")
+        var startError = ""
         val started = try {
             if (sr != null) ShareRouting.calculate(n, sr, myLat, myLng, wps, strategy)
-            else {
-                n.setIsNaviTravelView(false)
-                n.setMultipleRouteNaviMode(true)
-                if (!myLat.isNaN()) n.calculateDriveRoute(arrayListOf(NaviLatLng(myLat, myLng)), to, wps, strategy)
-                else n.calculateDriveRoute(to, wps, strategy)
-            }
-        } catch (e: Exception) { false }
+            else LocalRouting.calculate(n, routeMode,
+                if (!myLat.isNaN() && !myLng.isNaN()) NaviLatLng(myLat,myLng) else null,
+                NaviLatLng(destLat,destLng),wps,strategy)
+        } catch (e: Exception) { startError = e.message.orEmpty(); false }
         if (!started) {
             calculating = false
             if (retry > 0) {                     // 导航引擎可能还没初始化好：1.5 秒后自动再试一次
                 handler.postDelayed({ if (seq == calcSeq && sheet.visibility == View.VISIBLE) calculate(retry - 1) }, 1500)
                 return
             }
-            showStatus("路线规划没能开始（还没定位？）\n点这里重试", true); return
+            showStatus("${if (bicycle) "自行车" else "驾车"}路线规划没能开始\n${startError.ifBlank { "请检查定位、网络和高德 Key 权限" }}\n点这里重试", true); return
         }
         handler.postDelayed({
             if (seq == calcSeq && calculating) { calculating = false; showStatus("规划超时，点这里重试", true) }
@@ -893,10 +929,10 @@ class RoutePlanActivity : AppCompatActivity() {
         if (!ok) {
             val code = Refl.int(res, "getErrorCode") ?: (res as? Int)
             val detail = Refl.str(res, "getErrorDetail", "getErrorDescription") ?: ""
-            showStatus("路线规划失败（${code ?: "?"}）$detail\n点这里重试", true)
+            showStatus("${if (bicycle) "自行车" else "驾车"}路线规划失败（${code ?: "?"}）$detail\n${if (bicycle) "请检查高德 Key 的骑行算路权限、额度和网络；不会改用驾车路线。\n" else ""}点这里重试", true)
             return
         }
-        val paths: Map<Int, AMapNaviPath> = try { n.naviPaths ?: emptyMap() } catch (_: Exception) { emptyMap() }
+        val paths = availablePaths()
         val fromRes = (Refl.call(res, "getRouteid").second as? IntArray)?.filter { paths.containsKey(it) }
         val ids = (if (!fromRes.isNullOrEmpty()) fromRes else paths.keys.sorted()).take(3)
         if (ids.isEmpty()) { showStatus("没有可用的路线，点这里重试", true); return }
@@ -947,11 +983,11 @@ class RoutePlanActivity : AppCompatActivity() {
         for ((k, o) in overlays) {
             try { o.setTransparency(if (k == id) 1f else 0.35f); o.setZindex(if (k == id) 10 else 1) } catch (_: Throwable) {}
         }
-        try { navi?.selectRouteId(id) } catch (_: Exception) {}
+        if (!bicycle) try { navi?.selectRouteId(id) } catch (_: Exception) {}
         buildCards()
-        checkShareMatch(navi?.naviPaths?.get(id))
+        checkShareMatch(availablePaths()[id])
         try {
-            val p=navi?.naviPaths?.get(id)
+            val p=availablePaths()[id]
             val coords=p?.coordList
             if (p!=null && coords!=null && coords.size>=2)
                 MapFeeder.prepareRoute(this,"${p.pathid}:${p.allLength}",coords.map { doubleArrayOf(it.latitude,it.longitude) })
@@ -960,7 +996,7 @@ class RoutePlanActivity : AppCompatActivity() {
 
     private fun buildCards() {
         cardsRow.removeAllViews()
-        val paths: Map<Int, AMapNaviPath> = try { navi?.naviPaths ?: emptyMap() } catch (_: Exception) { emptyMap() }
+        val paths = availablePaths()
         routeIds.forEachIndexed { i, id ->
             val p = paths[id] ?: return@forEachIndexed
             val sel = id == selected
@@ -1028,7 +1064,7 @@ class RoutePlanActivity : AppCompatActivity() {
     private fun startNav() {
         if (selected < 0 || starting) return
         starting = true
-        try { navi?.selectRouteId(selected) } catch (_: Exception) {}
+        if (!bicycle) try { navi?.selectRouteId(selected) } catch (_: Exception) {}
         NaviBridge.routeCallback = null
         ShareGuide.start(shareRoute, this, avoidHighway, myLat, myLng)          // v4.5 偏航跟随原路线 + 原路线细线
         startActivity(Intent(this, NavActivity::class.java).putExtra("emu", emulate).putExtra("dest", destName))
@@ -1050,7 +1086,7 @@ class RoutePlanActivity : AppCompatActivity() {
 
     override fun onResume() { super.onResume(); mapView.onResume() }
     override fun onPause() { super.onPause(); mapView.onPause() }
-    override fun onSaveInstanceState(outState: Bundle) { super.onSaveInstanceState(outState); mapView.onSaveInstanceState(outState) }
+    override fun onSaveInstanceState(outState: Bundle) { outState.putInt("direct_route_mode", routeMode); super.onSaveInstanceState(outState); mapView.onSaveInstanceState(outState) }
     override fun onDestroy() {
         handler.removeCallbacksAndMessages(null)
         if (!starting) NaviBridge.routeCallback = null
