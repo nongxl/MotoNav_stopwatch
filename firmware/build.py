@@ -77,12 +77,13 @@ def main():
     output = build / 'output'
     output.mkdir(parents=True, exist_ok=True)
     prefix_map = '-ffile-prefix-map=' + str(Path.home()) + '=/builder'
-
     cli_cmd = shutil.which(args.cli) or args.cli
     cmd = [cli_cmd, 'compile', '--jobs', str(args.jobs), '--libraries', str(ROOT / 'libraries'),
            '--build-path', str(build / 'build'), '--fqbn', board['fqbn'],
            '--build-property', 'compiler.c.extra_flags=' + prefix_map,
-           '--build-property', 'compiler.cpp.extra_flags=' + prefix_map, '--output-dir', str(output), str(source)]
+           '--build-property', 'compiler.cpp.extra_flags=' + prefix_map,
+           '--build-property', 'compiler.c.elf.extra_flags=-Wl,--wrap=xTaskCreatePinnedToCore',
+           '--output-dir', str(output), str(source)]
 
     try:
         subprocess.run(cmd, check=True)

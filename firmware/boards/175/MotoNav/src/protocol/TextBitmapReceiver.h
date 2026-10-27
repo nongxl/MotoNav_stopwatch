@@ -11,7 +11,7 @@ void handleBitmap(const uint8_t *d, int n) {
   if (w == 0 || h == 0 || parts == 0) {          // 空图：清掉这一栏
     im.showW = 0; im.showH = 0; im.recvId = -1;
     navDirty = true;
-    if (slot == 3 || slot == 4) wxDirty = true;
+    if (slot == 3 || slot == 4 || (slot >= 7 && slot <= 11)) wxDirty = true;
     if (slot == 5 || slot == 6 || slot == 12) musicDirty = true;
     return;
   }
@@ -32,7 +32,7 @@ void handleBitmap(const uint8_t *d, int n) {
     im.showW = im.recvW; im.showH = im.recvH;
     im.recvId = -1;
     navDirty = true;
-    if (slot == 3 || slot == 4) wxDirty = true;
+    if (slot == 3 || slot == 4 || (slot >= 7 && slot <= 11)) wxDirty = true;
     if (slot == 5 || slot == 6 || slot == 12) musicDirty = true;                // 音乐文字图片收齐后刷新
   }
 }

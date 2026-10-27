@@ -1,0 +1,60 @@
+name: Verify the two Android source editions
+on:
+  push:
+    branches: [main]
+    paths: [android/**, Build-Personal.ps1, Build-Countdown.ps1, .github/workflows/android-verify.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  standard:
+    runs-on: windows-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: android-actions/setup-android@v3
+        with:
+          packages: platform-tools
+          log-accepted-android-sdk-licenses: false
+      - run: sdkmanager 'platforms;android-35' 'build-tools;35.0.0'
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.10.2'
+      - name: Build standalone standard APK
+        working-directory: android/standard
+        run: gradle --no-daemon assembleDebug
+      - name: Standard logic and clock regressions
+        run: ./android/standard/tests/run.ps1
+  countdown-source:
+    runs-on: windows-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: android-actions/setup-android@v3
+        with:
+          packages: platform-tools
+          log-accepted-android-sdk-licenses: false
+      - run: sdkmanager 'platforms;android-35' 'build-tools;35.0.0'
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.10.2'
+      - name: Compile countdown autonomous source (intermediate APK only)
+        working-directory: android/countdown
+        run: gradle --no-daemon assembleDebug
+      - name: Countdown and route policy regressions
+        run: python android/countdown/tests/run.py
+      - name: Pinned provider download and offline checks
+        run: python android/countdown/tests/test_provider_download.py
+      - name: Explain full build input
+        run: Write-Host 'The full builder downloads its pinned provider.apk from Releases; this source-only job does not publish an intermediate APK.'

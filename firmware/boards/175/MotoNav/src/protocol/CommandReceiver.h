@@ -26,6 +26,13 @@ int hexVal(char c) {
 
 // 处理文字类消息
 void handleText(const String &m) {
+  if(m.startsWith("#TIME,")) {
+    if(homeClock.receive(m.c_str(),millis())) {
+      drawHomeClock();
+      Serial.printf("CLOCK sync time=%s date=%s\n",homeClockTime,homeClockDate);
+    }
+    return;
+  }
   if(m.startsWith("#TLA,")) {
     const int previous=trafficLightFrame.key;
     const bool accepted=trafficLightFrame.receive(m.c_str(),millis());
@@ -296,7 +303,7 @@ void handleText(const String &m) {
   }
   if (m.startsWith("#n,")) { nightOn = m.substring(3).toInt() != 0; navDirty = true; return; }   // v3.0 夜间配色
   if (m == "#o") { ghostN = 0; navDirty = true; return; }   // v4.4 不显示原路线
-  if (m == "#WXRESET") { wxHave = false; wxExtra = false; wxDetail = 0; wxDirty = true; return; }
+  if (m == "#WXRESET") { wxHave = false; wxExtra = false; wxDirty = true; return; }
   if (m.startsWith("#WX,")) { parseWeatherExtra(m); return; }
   if (m.startsWith("#W,")) { parseWeather(m); return; }   // v5.3 天气
   if (m.startsWith("#i,")) {                             // v5.1 来电："#i,1,号码" / "#i,0"

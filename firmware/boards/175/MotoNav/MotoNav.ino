@@ -86,7 +86,8 @@ void setup() {
 
   if (bootBrand != BootAnimation::Off && gfx->getFramebuffer()) {
     uint32_t bootAt = millis();
-    while (millis() - bootAt < BootAnimation::Duration) {
+    const uint32_t bootDuration = BootAnimation::duration(bootBrand);
+    while (millis() - bootAt < bootDuration) {
       uint32_t frameAt = millis();
       BootAnimation::render(gfx->getFramebuffer(), frameAt - bootAt, bootBrand);
       flushSync();
@@ -139,6 +140,10 @@ void setup() {
   adv->setAppearance(GENERIC_HID);
   adv->setScanResponse(true);
   BLEDevice::startAdvertising();
+  const MotoNavIpcStackStatus ipc=motoNavIpcStackStatus();
+  Serial.printf("IPC stacks bytes=%lu/%lu free-min=%lu/%lu\n",
+      (unsigned long)ipc.bytes[0],(unsigned long)ipc.bytes[1],
+      (unsigned long)ipc.freeMinimum[0],(unsigned long)ipc.freeMinimum[1]);
   idlePowerOffReset(&idlePowerOffTimer, millis());
   Serial.println(String("MotoNav ready, firmware ") + FW_VERSION);
 }
@@ -148,6 +153,7 @@ void setup() {
 
 // 主循环：接收消息、处理输入、调度页面、绘图和推屏。
 void loop() {
+  homeClock.tick(millis());
   hidMediaTick();                                      // press/release without blocking navigation
   static uint32_t lyricConnectionEpoch = 0;
   if (lyricConnectionEpoch != mediaConnectionEpoch) {
@@ -307,6 +313,7 @@ void loop() {
   static bool lightShown=false;
   static uint32_t lightDrawAt=0;
   animateCat();
+  drawHomeClock();
   if(showLight) {
     if(!lightShown || needFlush || lightNow-lightDrawAt>=200) {
       drawTrafficLightLab(lightNow);lightDrawAt=lightNow;

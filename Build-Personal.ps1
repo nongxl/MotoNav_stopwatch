@@ -2,7 +2,7 @@ param([string]$JavaPath='', [string]$SdkPath='', [string]$GradlePath='', [switch
 $ErrorActionPreference='Stop'
 [Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12
 $root=$PSScriptRoot
-$project=Join-Path $root 'android'
+$project=Join-Path $root 'android/standard'
 $tools=Join-Path $root '.tools'
 New-Item -ItemType Directory -Force $tools | Out-Null
 if(-not $env:GRADLE_USER_HOME){$env:GRADLE_USER_HOME=Join-Path $tools 'gradle-cache'}
@@ -87,4 +87,4 @@ $env:MOTONAV_SIGN_PASSWORD=$null
 Write-Host "Done: $out" -ForegroundColor Green
 Write-Host "Package: $appId"
 Write-Host "SHA1: $fingerprint"
-Write-Host 'Back up android/personal.properties and the entire android/keystore folder. Never share them.'
+Write-Host 'Back up android/standard/personal.properties and android/standard/keystore. Never share them.'

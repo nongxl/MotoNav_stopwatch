@@ -8,7 +8,6 @@
 uint16_t *slideOld = nullptr, *slideNew = nullptr;
 int16_t chordHalf[LCD_HEIGHT];   // 每一行在圆里的半宽（圆外不用算）
 bool chordReady = false;
-int lastSlideSx = -1, lastSlideSy = 0;      // 上次进天气页的方向（自动回去时反着滑）
 void drawNavFrame();
 
 // v7.8 音乐页：歌名/歌手图片栏 5/6；#Z,有会话,播放中,按钮位掩码。
@@ -70,6 +69,7 @@ void drawMusic() {
 // 拖动状态
 bool dragging = false;
 int dragTarget = 0, dragSign = 1;
+int dragWeatherDetail = 0;
 bool dragHoriz = true;
 float dragP = 0, dragV = 0;                 // 新页面已经进来多少像素；速度（像素/毫秒）
 unsigned long dragT = 0;
@@ -85,19 +85,20 @@ static inline uint16_t dim565(uint16_t c, uint32_t k) {   // k: 0~32，32 = 原�
 }
 
 // 画一个页面到画布（不改当前页）
-void renderPage(int p) {
+void renderPage(int p, int detail) {
   int keep = page;
+  int keepDetail = wxDetail;
   bool ks = sliding;
   page = p; sliding = false;
   if (p == 2) drawMusic();
-  else if (p == 1) drawWeather();
+  else if (p == 1) { wxDetail = detail; drawWeather(); }
   else if (inNav) drawNavFrame();
   else drawWaiting(bleConnected ? WAIT_READY : WAIT_NOLINK);
-  page = keep; sliding = ks;
+  page = keep; wxDetail = keepDetail; sliding = ks;
 }
 
 // 准备滑动：存下屏幕上的旧画面，在画布上画好目标页面存起来
-bool slidePrepare(int target) {
+bool slidePrepare(int target, int detail) {
   const size_t BYTES = (size_t)LCD_WIDTH * LCD_HEIGHT * 2;
   if (!slideOld) slideOld = (uint16_t *)heap_caps_malloc(BYTES, MALLOC_CAP_SPIRAM);
   if (!slideNew) slideNew = (uint16_t *)heap_caps_malloc(BYTES, MALLOC_CAP_SPIRAM);
@@ -111,7 +112,7 @@ bool slidePrepare(int target) {
   }
   if (fbBuf[1]) { flushWait(); xSemaphoreGive(flushDone); }   // 等正在推的那帧推完，旧画面才完整
   memcpy(slideOld, shownFrame(), BYTES);
-  renderPage(target);
+  renderPage(target, detail);
   memcpy(slideNew, gfx->getFramebuffer(), BYTES);
   sliding = true;
   needFlush = false; frameIsMap = false;
@@ -193,13 +194,13 @@ void slideCommit() {
   const size_t BYTES = (size_t)LCD_WIDTH * LCD_HEIGHT * 2;
   sliding = false; dragging = false;
   page = dragTarget;
+  if (page == 1) wxDetail = dragWeatherDetail;
   pageAt = millis();
   memcpy(gfx->getFramebuffer(), slideNew, BYTES);
   needFlush = true; frameIsMap = false;
   if (page == 2) {
     onWaitScreen = false; musicDirty = true; pendingEvt = "T,M,Q";
   } else if (page == 1) {
-    lastSlideSx = dragHoriz ? dragSign : 0; lastSlideSy = dragHoriz ? 0 : dragSign;
     onWaitScreen = false;
     wxDirty = false;
     if (!wxHave || millis() - wxAt > 15UL * 60 * 1000) { pendingEvt = "T,W"; wxAskAt = millis(); }
@@ -212,7 +213,7 @@ void slideCommit() {
 // 没换成：回到原页面
 void slideCancel() {
   sliding = false; dragging = false;
-  renderPage(page);
+  renderPage(page, wxDetail);
   if (page == 2) musicDirty = true;
   else if (page == 1) wxDirty = false;
   else if (inNav) navDirty = true;
@@ -255,11 +256,10 @@ void dragMove(int dx, int dy, unsigned long now) {
     dragHoriz = abs(dx) >= abs(dy);
     int d = dragHoriz ? dx : dy;
     dragSign = d > 0 ? 1 : -1;
-    if (page == 2) { if (!dragHoriz || dragSign > 0) return; dragTarget = 0; }
-    else if (page == 1) dragTarget = 0;
-    else if (dragHoriz) dragTarget = dragSign < 0 ? 1 : 2;
-    else dragTarget = 1;
-    if (!slidePrepare(dragTarget)) return;
+    const auto next = FixedPageLayout::move(page, wxDetail, dragHoriz, dragSign);
+    if (!next.allowed) return;
+    dragTarget = next.page; dragWeatherDetail = next.detail;
+    if (!slidePrepare(dragTarget, dragWeatherDetail)) return;
     dragging = true;
     dragP = 0; dragV = 0; dragT = now;
   }
@@ -327,19 +327,7 @@ void musicTap(int x, int y) {
   musicAck = 1; musicAckUntil = millis() + 2500; musicDirty = true;
 }
 
-// 自动换页（导航中看天气超时 / 快到路口）：整段动画
-void showPageAnimated(int target, int sx, int sy) {
-  if (page == target) return;
-  dragHoriz = sx != 0 || sy == 0;
-  dragSign = dragHoriz ? (sx ? sx : 1) : sy;
-  dragTarget = target;
-  if (!slidePrepare(target)) { page = target; renderPage(target); needFlush = true; return; }
-  dragging = true;
-  slideAnimate(0, dragHoriz ? LCD_WIDTH : LCD_HEIGHT, 420);
-  slideCommit();
-}
-
-// 音乐页在路口前回导航，其余时候保持显示，便于连续切歌。
+// 固定页面不因导航距离自动跳转；音乐回执照常刷新。
 void musicTick() {
   if (musicAckUntil && (long)(millis() - musicAckUntil) >= 0) {
     if (musicAck == 1) { musicAck = 4; musicAckUntil = millis() + 2500; }
@@ -347,22 +335,13 @@ void musicTick() {
     musicDirty = true;
   }
   if (page != 2 || callOn || pairOn || sliding) return;
-  if (inNav && !cruiseOn && navDir != "S" && navDir.length() && navDist > 0 && navDist < 200 && millis() - pageAt > 3000) {
-    showPageAnimated(0, -1, 0);
-    return;
-  }
   if (musicDirty) { musicDirty = false; drawMusic(); }
 }
 
-// 每圈调用：天气页要不要重画、要不要回导航
+// 天气列共享请求和数据；保持用户手动选中的页面。
 void weatherTick() {
-  if (page != 1 || callOn || sliding) return;
+  if (page != 1 || callOn || pairOn || sliding) return;
   unsigned long now = millis();
-  // 导航中：看 15 秒自动回去；快到路口也立刻回去
-  if (inNav && (now - pageAt > 15000 || (navDir != "S" && navDir.length() && navDist > 0 && navDist < 200))) {
-    showPageAnimated(0, -lastSlideSx, -lastSlideSy);   // 按进来的方向反着滑回去
-    return;
-  }
   // 还没数据或数据旧了：30 秒再要一次
   if (bleConnected && (!wxHave || now - wxAt > 15UL * 60 * 1000) && now - wxAskAt > 30000) { pendingEvt = "T,W"; wxAskAt = now; }
   if (wxDirty) { wxDirty = false; drawWeather(); }

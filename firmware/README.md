@@ -1,3 +1,17 @@
+# 最新 1.75 通用固件 7.12.10-pages.4
+
+[本轮下载与烧录说明](../docs/RELEASE-FIRMWARE-7.12.10-pages.4.md) · [Release](https://github.com/zyn950929/MotoNav/releases/tag/firmware-v7.12.10-pages.4)
+
+修复开机时蓝牙初始化任务栈越界，合入固定页面和大字时间／小字日期；公开动画为通用 MotoNav／品牌，不含个人图片。源码 `boards/175/MotoNav`，依赖 `libraries/MotoNavIpcStackGuard` 和构建脚本中的链接设置。安卓两版可配合使用；本轮不修改 iOS，不等于 iOS 已新增时钟适配。
+
+Windows：下载独立一键烧录 ZIP 完整解压后双击入口，默认应用升级保留设置，首次完整刷写会清空数据。独立镜像和源码 ZIP 一并提供。只适用1.75；1.85B保留原7.12.3-185B。
+
+构建：`./firmware/build.ps1 -Board 175` 或 `python firmware/build.py`。生成独立工具包：`python firmware/package_flasher.py --tools-dir <esptool目录>`。依赖、写入地址和实测边界见本轮说明。
+
+以下为历史说明，版本以上文为准。
+
+---
+
 # 当前 1.75 通用固件：7.12.9-junction.11
 
 [最新通用版、构建方式及验证范围](../docs/RELEASE-FIRMWARE-7.12.9-junction.11.md)。公开源码不含个人 Rebel 500 开机资源。1.85B 保持 7.12.3-185B。**最新成品：[v7.12.9-junction.11 Release](https://github.com/zyn950929/MotoNav/releases/tag/firmware-v7.12.9-junction.11)**。下方 7.12.1 下载是历史版本。

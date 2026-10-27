@@ -11,6 +11,10 @@
 // 没连上时摩托车灯熄灭、她闭眼打瞌睡，头上飘 z
 // v4.6 首页像素骑手（原创角色）：40×26，每格放大 RIDER_S 倍；由 rider2.py 生成
 #include "../../resources/RiderSprites.h"
+#include "../../HomeClock.h"
+HomeClock homeClock;
+char homeClockTime[6]={};
+char homeClockDate[11]={};
 uint16_t riderColor(char ch) {
   switch (ch) {
     case 'K': return 0x18C6;
@@ -95,8 +99,10 @@ void animateCat() {
   needFlush = true;
 }
 
-// 页面：导航左滑天气，右滑音乐，上下滑也可查看天气
+#include "../../FixedPageLayout.h"
+// 固定位置：音乐在左、导航居中、天气在右；降雨在天气上方、预警在下方。
 int page = 0;                               // 0 = 导航 / 首页，1 = 天气，2 = 音乐
+int wxDetail = 0;                           // 天气列：0 = 天气，1 = 上方降雨，2 = 下方预警
 unsigned long pageAt = 0;
 
 // 页面顺序对应滑动位置：音乐在左，主页居中，天气在右；导航主页不显示。
@@ -106,6 +112,28 @@ void drawPageDots() {
   for (int i = 0; i < 3; i++) {
     aaDisc(CX + (i - 1) * 20, 444, 4, page == pageOrder[i] ? C_WHITE : 0x4208);
   }
+  if (page == 1) for (int i = 0; i < 3; i++) {
+    aaDisc(438, CX + (i - 1) * 18, 3,
+      i == FixedPageLayout::weatherRow(wxDetail) ? C_WHITE : 0x4208);
+  }
+}
+
+// Update just the clock rectangle once its displayed minute/date changes.
+void drawHomeClock(bool force=false) {
+  if(!onWaitScreen||sliding||page!=0||inNav)return;
+  static int64_t drawnMinute=-2;
+  const uint32_t now=millis();
+  const int64_t minute=homeClock.minuteKey(now);
+  if(!force&&minute==drawnMinute)return;
+  char time[6],date[11];
+  const bool valid=homeClock.format(now,time,date);
+  drawnMinute=minute;
+  if(!force&&strcmp(time,homeClockTime)==0&&strcmp(date,homeClockDate)==0)return;
+  memcpy(homeClockTime,time,sizeof(time));memcpy(homeClockDate,date,sizeof(date));
+  gfx->fillRect(CX-155,204,310,106,C_BLACK);
+  printCentered(time,CX,210,8,valid?C_WHITE:C_GREY);
+  printCentered(date,CX,290,2,C_GREY);
+  needFlush=true;
 }
 
 void drawWaiting(int st) {
@@ -118,17 +146,17 @@ void drawWaiting(int st) {
   riderPrevF = -1; riderPrevZ = -2;
   catForce = true;
   animateCat();
-  printCentered("MotoNav", CX, 200, 6, st == WAIT_READY ? C_CYAN : C_GREY);
+  drawHomeClock(true);
   if (st == WAIT_READY) {
-    printCentered("ready", CX, 275, 3, C_GREEN);
+    printCentered("ready", CX, 324, 2, C_GREEN);
   } else if (st == WAIT_NOLINK) {
-    printCentered("no link", CX, 275, 3, C_GREY);
+    printCentered("no link", CX, 324, 2, C_GREY);
   } else {
     drawRedRing();
-    printCentered("LINK LOST", CX, 275, 4, C_RED);
+    printCentered("LINK LOST", CX, 324, 2, C_RED);
   }
-  printCentered(bleName, CX, 332, 2, C_GREY);                          // v7.0 这块圆屏的蓝牙名
-  printCentered(String("fw ") + FW_VERSION + "  " + String(qspiMHz) + "MHz", CX, 360, 2, C_GREY);
+  printCentered(bleName, CX, 356, 2, C_GREY);                          // v7.0 这块圆屏的蓝牙名
+  printCentered(String("fw ") + FW_VERSION + "  " + String(qspiMHz) + "MHz", CX, 386, 1, C_GREY);
   drawStatus();
   drawPageDots();
   needFlush = true;

@@ -98,11 +98,11 @@ void drawTemp(int t, int cx, int y, int size, uint16_t c) {
 const char *WX_WEEK[] = {"", "MON", "TUE", "WED", "THU", "FRI", "SAT", "SUN"};
 
 // QWeather extension: no strings in BLE packets; Chinese summaries use image slots 7-11.
-int wxDetail = 0, wxAQI = -1, wxAlerts = -1, wxLevel = 0, wxRainN = 0;
+int wxAQI = -1, wxAlerts = -1, wxLevel = 0, wxRainN = 0;
 int wxRain[24];
 unsigned long wxAlertTag = 0;
 bool wxExtra = false;
-void weatherTap() { if (wxHave && wxExtra) { wxDetail = (wxDetail + 1) % 3; wxDirty = true; pageAt = millis(); } }
+void weatherTap() {} // 固定页面只通过相邻方向滑动切换，不轻点轮换。
 void parseWeatherExtra(const String &m) {
   char buffer[240]; m.toCharArray(buffer, sizeof(buffer));
   char *save = nullptr; strtok_r(buffer, ",", &save);
@@ -111,20 +111,25 @@ void parseWeatherExtra(const String &m) {
   if (n < 5 || values[3] < 0 || values[3] > 24 || n < 5 + values[3]) return;
   wxAQI = values[0]; wxAlerts = values[1]; wxLevel = values[2]; wxRainN = values[3];
   unsigned long tag = (unsigned long) values[4];
-  if (wxAlerts > 0 && tag != wxAlertTag && page == 1) wxDetail = 2;
   wxAlertTag = tag;
   for (int i = 0; i < wxRainN; ++i) wxRain[i] = values[5+i];
   wxExtra = true; wxDirty = true;
 }
 bool drawWeatherExtra() {
-  if (!wxExtra || wxDetail == 0) return false;
+  if (wxDetail == 0) return false;
+  onWaitScreen = false;
+  frameIsMap = false;
   gfx->fillScreen(C_BLACK);
   if (wxDetail == 1) {
     printCentered("RAIN / AIR", CX, 55, 3, C_CYAN);
-    drawTextImg(7, 105, 0xFF);
+    if (wxExtra) drawTextImg(7, 105, 0xFF);
     int peak = 0;
-    for (int i=0; i<wxRainN; ++i) peak = max(peak, wxRain[i]);
-    if (wxRainN > 0) {
+    bool rainAvailable = false;
+    for (int i=0; wxExtra && i<wxRainN; ++i) {
+      if (wxRain[i] >= 0) rainAvailable = true;
+      peak = max(peak, wxRain[i]);
+    }
+    if (rainAvailable) {
       for (int i=0; i<wxRainN; ++i) {
         int x = 95 + i * 276 / wxRainN;
         int height = wxRain[i] < 0 ? 2 : wxRain[i] * 72 / max(1, peak);
@@ -132,24 +137,26 @@ bool drawWeatherExtra() {
       }
       printCentered("NEXT 2H  MAX " + String(peak / 100.0f, 2) + " mm/5m", CX, 240, 2, C_GREY);
     } else printCentered("RAIN DATA UNAVAILABLE", CX, 190, 2, C_GREY);
-    uint16_t airColor = wxAQI < 0 ? C_GREY : C_CYAN;
-    drawTextImg(8, 285, 0xFF);
-    printCentered(wxAQI < 0 ? "AQI --" : "AQI " + String(wxAQI), CX, 335, 3, airColor);
+    uint16_t airColor = !wxExtra || wxAQI < 0 ? C_GREY : C_CYAN;
+    if (wxExtra) drawTextImg(8, 285, 0xFF);
+    printCentered(!wxExtra || wxAQI < 0 ? "AQI --" : "AQI " + String(wxAQI), CX, 335, 3, airColor);
   } else {
-    printCentered(wxAlerts > 0 ? "WEATHER ALERT" : "ALERT STATUS", CX, 65, 3, wxLevel >= 3 ? C_ORANGE : C_CYAN);
-    drawTextImg(9, 125, 0xFF);
-    drawTextImg(10, 200, 0xDC);
-    drawTextImg(11, 270, 0xDC);
-    if (wxAlerts > 1) printCentered(String(wxAlerts) + " ALERTS - DETAILS ON PHONE", CX, 330, 1, C_GREY);
+    printCentered(wxExtra && wxAlerts > 0 ? "WEATHER ALERT" : "ALERT STATUS", CX, 65, 3, wxExtra && wxLevel >= 3 ? C_ORANGE : C_CYAN);
+    if (wxExtra) {
+      drawTextImg(9, 125, 0xFF);
+      drawTextImg(10, 200, 0xDC);
+      drawTextImg(11, 270, 0xDC);
+      if (wxAlerts > 1) printCentered(String(wxAlerts) + " ALERTS - DETAILS ON PHONE", CX, 330, 1, C_GREY);
+    } else printCentered("ALERT DATA UNAVAILABLE", CX, 200, 2, C_GREY);
     printCentered("MAY BE DELAYED - CHECK OFFICIAL", CX, 365, 1, C_GREY);
   }
-  printCentered("QWEATHER - TAP TO SWITCH", CX, 400, 1, C_GREY);
+  printCentered(wxDetail == 1 ? "SWIPE UP: WEATHER" : "SWIPE DOWN: WEATHER", CX, 400, 1, C_GREY);
   drawPageDots(); needFlush = true;
   return true;
 }
 
 void drawWeather() {
-  if (wxHave && drawWeatherExtra()) return;
+  if (drawWeatherExtra()) return;
   onWaitScreen = false;
   frameIsMap = false;
   gfx->fillScreen(C_BLACK);
@@ -195,7 +202,7 @@ void drawWeather() {
       printCentered(String(wxFh[i]) + "/" + String(wxFl[i]), x, 360, 2, C_WHITE);
     }
   }
-  if (wxTime.length()) printCentered("QWEATHER " + wxTime + (wxAlerts > 0 ? " ! TAP" : " TAP"), CX, 406, 1, 0x5AEB);
+  if (wxTime.length()) printCentered("QWEATHER " + wxTime + (wxAlerts > 0 ? " !" : ""), CX, 406, 1, 0x5AEB);
   drawPageDots();
   needFlush = true;
 }

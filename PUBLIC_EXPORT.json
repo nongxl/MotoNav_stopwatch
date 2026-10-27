@@ -3,14 +3,14 @@
   "boards": [
     "Waveshare ESP32-S3-Touch-AMOLED-1.75"
   ],
-  "firmwareVersion": "7.12.9-junction.11",
+  "firmwareVersion": "7.12.10-pages.4",
   "credentialsIncluded": false,
   "signingFilesIncluded": false,
-  "anonymousBuildVerified": false,
-  "anonymousBuildSignatureVerified": false,
+  "anonymousBuildVerified": true,
+  "anonymousBuildSignatureVerified": true,
   "privateLogsIncluded": false,
   "originalGitHistoryIncluded": false,
-  "date": "2026-10-25",
+  "date": "2026-10-27",
   "namespace": "com.example.motonav",
   "existingLogicChecks": 41,
   "showcaseIncluded": true,
@@ -27,10 +27,10 @@
     "ios",
     "android"
   ],
-  "iosFirmwareVersion": "7.12.9-junction.11",
-  "androidFirmwareVersion": "7.12.9-junction.11",
+  "iosFirmwareVersion": "7.12.10-pages.4",
+  "androidFirmwareVersion": "7.12.10-pages.4",
   "firmwareShared": true,
-  "androidReleaseNotes": "docs/RELEASE-2026-10-25.md",
+  "androidReleaseNotes": "docs/RELEASE-2026-10-27.md",
   "androidArrivalFixDeviceTest": "Titan 2 / firmware 7.8.12 / simulated navigation / user confirmed",
   "androidCurrentRepositoryFirmwareRetest": false,
   "androidUnsignedReleaseBuildVerified": true,
@@ -40,8 +40,8 @@
   "androidCrashRecoveryChecks": 7,
   "iosArrivalFixDeviceTestVerified": false,
   "appVersionCode": 130,
-  "firmwareReleaseNotes": "docs/RELEASE-FIRMWARE-7.12.9-junction.11.md",
-  "iosSourceChangedThisUpdate": true,
+  "firmwareReleaseNotes": "docs/RELEASE-FIRMWARE-7.12.10-pages.4.md",
+  "iosSourceChangedThisUpdate": false,
   "freshIncluded": false,
   "binaryReleaseIncludedThisUpdate": true,
   "latestAndroidDeviceTestVerified": false,
@@ -51,13 +51,13 @@
   ],
   "privateTripFixturesIncluded": false,
   "mapsAndroid": "AMap SDK only; radar has no basemap",
-  "publicPersonalSignedReleaseBuildVerified": false,
+  "publicPersonalSignedReleaseBuildVerified": true,
   "webMotorSyntheticChecks": 155,
   "motorTrackChecks": 254,
   "amapOnlyChecks": 3037,
   "fourStyleRasterChecks": 22941,
-  "verificationNotes": "docs/VERIFY-2026-10-25.md",
-  "androidFusionVersion": "8.3.26-fusion.21",
+  "verificationNotes": "docs/VERIFY-2026-10-27.md",
+  "androidFusionVersion": "8.3.26-single.29",
   "iosSourceOnly": true,
   "iosNewIPAIncluded": false,
   "personalRebelBootIncluded": false,
@@ -78,5 +78,24 @@
   "firmwareReleaseURL": "https://github.com/zyn950929/MotoNav/releases/tag/firmware-v7.12.9-junction.11",
   "firmwareFlasherVerifyOnlyPassed": true,
   "firmwareBinaryDeviceTested": false,
-  "firmwareMacFlashPolicyTests": 6
+  "firmwareMacFlashPolicyTests": 6,
+  "androidVariants": {
+    "standard": {
+      "version": "8.3.26",
+      "source": "android/standard",
+      "countdown": false
+    },
+    "countdown": {
+      "version": "8.3.26-single.29",
+      "source": "android/countdown",
+      "countdown": true,
+      "fullBuildRequiresUserSuppliedDependency": true
+    }
+  },
+  "iosCurrentFirmwareRetest": false,
+  "standardReleaseBuildVerified": true,
+  "countdownCompleteBuildVerified": true,
+  "publicFirmwareDeviceTested": false,
+  "firmwareCorePersonalVariantDeviceTested": true,
+  "androidAPKPublishedThisUpdate": false
 }

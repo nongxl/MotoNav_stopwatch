@@ -7,6 +7,7 @@
 #include <Preferences.h>
 #include <esp_sleep.h>
 #include <esp_system.h>
+#include <MotoNavIpcStackGuard.h>
 #include <driver/rtc_io.h>
 #include "../../IdlePowerOff.h"
 #include <driver/spi_master.h>

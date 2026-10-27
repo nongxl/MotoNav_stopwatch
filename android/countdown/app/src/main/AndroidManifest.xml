@@ -1,0 +1,144 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- MotoNav App v5.0：v5.0 新增来电显示权限（电话状态、通话记录、通讯录）；v4.4 新增 ShareActivity（接收高德分享的路线）；
+     v3.9：v3.0 新增 RoutePlanActivity（搜索/选路线）、NavActivity（导航页）；v3.5 新增高德探测；
+     v3.9 声明要查看手机上的语音引擎（安卓 11 起不声明就只能看到系统自带的） -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+    <permission android:name="com.yuminaga.motonav.permission.CAR_GUIDANCE" android:protectionLevel="signature" />
+    <uses-permission android:name="com.yuminaga.motonav.permission.CAR_GUIDANCE" />
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
+    <uses-permission android:name="android.permission.CHANGE_WIFI_STATE" />
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
+    <uses-permission android:name="android.permission.ACCESS_LOCATION_EXTRA_COMMANDS" />
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.BLUETOOTH" android:maxSdkVersion="30" />
+    <uses-permission android:name="android.permission.BLUETOOTH_ADMIN" android:maxSdkVersion="30" />
+    <uses-permission android:name="android.permission.BLUETOOTH_SCAN" android:usesPermissionFlags="neverForLocation" />
+    <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_LOCATION" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
+    <!-- v5.0 来电显示：电话状态、来电号码（通话记录）、通讯录里的名字 -->
+    <uses-permission android:name="android.permission.READ_PHONE_STATE" />
+    <uses-permission android:name="android.permission.READ_CALL_LOG" />
+    <uses-permission android:name="android.permission.READ_CONTACTS" />
+    <uses-permission android:name="android.permission.ANSWER_PHONE_CALLS" />
+
+    <!-- v3.9 能看到手机上装的所有语音引擎（VoxSherpa、SherpaTTS 等） -->
+    <queries>
+        <intent>
+            <action android:name="android.intent.action.TTS_SERVICE" />
+        </intent>
+    </queries>
+    <!-- v6.2 android:name=".MotoNavApp"：启动时先把 App 里填的高德 key 交给高德 SDK -->
+    <application
+        android:name=".MotoNavApp"
+        android:allowBackup="true"
+        android:dataExtractionRules="@xml/data_extraction_rules"
+        android:fullBackupContent="@xml/backup_rules"
+        android:icon="@mipmap/ic_launcher"
+        android:label="@string/app_name"
+        android:roundIcon="@mipmap/ic_launcher_round"
+        android:supportsRtl="true"
+        android:theme="@style/Theme.MotoNav">
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:windowSoftInputMode="adjustResize">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <activity android:name=".ShareActivity" android:exported="true" android:excludeFromRecents="true">
+            <intent-filter>
+                <action android:name="android.intent.action.SEND" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="text/plain" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="https" android:host="surl.amap.com" />
+                <data android:scheme="https" android:host="m.amap.com" />
+                <data android:scheme="https" android:host="www.amap.com" />
+            </intent-filter>
+        </activity>
+
+        <activity android:name=".ShareWebVerificationActivity" android:exported="false" android:windowSoftInputMode="adjustResize" />
+        <activity android:name=".SingleEngineActivity" android:exported="false" android:launchMode="singleTop" />
+        <activity android:name=".MotorWebPlannerActivity" android:exported="false"
+            android:windowSoftInputMode="adjustResize" />
+        <activity android:name=".MotorWebActivity" android:exported="false"
+            android:windowSoftInputMode="adjustResize" />
+        <activity android:name=".MotorWebNavActivity" android:exported="false" />
+
+        <!-- v3.0 搜索目的地 + 选路线 -->
+        <activity
+            android:name=".RoutePlanActivity"
+            android:exported="false"
+            android:screenOrientation="portrait"
+            android:windowSoftInputMode="adjustNothing|stateVisible"
+            android:configChanges="orientation|keyboardHidden|keyboard|screenSize|navigation" />
+
+        <activity android:name=".RideHistoryActivity" android:exported="false" />
+
+        <!-- v3.0 导航页 -->
+        <activity
+            android:name=".NavActivity"
+            android:exported="false"
+            android:screenOrientation="portrait"
+            android:launchMode="singleTask"
+            android:configChanges="orientation|keyboardHidden|keyboard|screenSize|navigation" />
+
+        <!-- v3.5 高德探测：页面、读通知、读界面文字 -->
+        <activity
+            android:name=".ProbeActivity"
+            android:exported="false"
+            android:screenOrientation="portrait" />
+        <service
+            android:name=".AmapNotifyListener"
+            android:exported="true"
+            android:label="MotoNav 音乐与导航通知"
+            android:permission="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE">
+            <intent-filter>
+                <action android:name="android.service.notification.NotificationListenerService" />
+            </intent-filter>
+        </service>
+        <service
+            android:name=".AmapScreenReader"
+            android:exported="true"
+            android:label="MotoNav 读取高德界面"
+            android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
+            <intent-filter>
+                <action android:name="android.accessibilityservice.AccessibilityService" />
+            </intent-filter>
+            <meta-data
+                android:name="android.accessibilityservice"
+                android:resource="@xml/amap_screen_reader" />
+        </service>
+
+        <!-- v6.5 不再在这里放 key：高德 key 在 App 里填（Keys.kt 启动时交给高德 SDK） -->
+
+        <service android:name="com.amap.api.location.APSService" />
+
+        <!-- 高德原版导航组件（调试区备用） -->
+        <activity
+            android:name="com.amap.api.navi.AmapRouteActivity"
+            android:theme="@android:style/Theme.NoTitleBar"
+            android:configChanges="orientation|keyboardHidden|screenSize|navigation" />
+        <service
+            android:name=".NavService"
+            android:exported="false"
+            android:foregroundServiceType="location|connectedDevice" />
+    </application>
+
+</manifest>

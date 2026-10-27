@@ -1,0 +1,183 @@
+{
+  "schema": 1,
+  "providerSHA256": "f0fe164279a6d60bd83d926a32d47f335f044faf9c0d37564b49655e95db0141",
+  "files": [
+    {
+      "path": "nm.smali",
+      "beforeSHA256": "20417a93ee9c914b25d88951aaf4270003b47b5ea84f6dcb93d615bcbf9f64f9",
+      "afterSHA256": "33623b323453bd1165eccc6437069410ff679e8865f5de9363805eb5f39e13b4",
+      "edits": [
+        {
+          "start": 327,
+          "end": 327,
+          "old": [],
+          "new": [
+            "\n",
+            "    invoke-static {p2, v0}, Lcom/yuminaga/motonav/FusionCarUi;->maskProviderFloat(Landroid/view/View;Landroid/view/WindowManager$LayoutParams;)V\n"
+          ]
+        }
+      ]
+    },
+    {
+      "path": "oo.smali",
+      "beforeSHA256": "86caffc556dd4b68dd8d4883ab305299e65a9731eb8726825e6e16fd5bc261c9",
+      "afterSHA256": "e6fc73df47c35e9c3c554915dc91a45740026d76bae21966d7d7fff6a4def219",
+      "edits": [
+        {
+          "start": 47,
+          "end": 47,
+          "old": [],
+          "new": [
+            "\n",
+            "    iget-object v0, p0, Loo;->d:Lcom/autonavi/amapauto/jni/protocol/data/GuideInfoProtocolData;\n",
+            "\n",
+            "    invoke-static {v0}, Lcom/yuminaga/motonav/CarEngineTap;->guide(Ljava/lang/Object;)V\n"
+          ]
+        }
+      ]
+    },
+    {
+      "path": "xn.smali",
+      "beforeSHA256": "730dfdb4b974bd9169541c92d74c1dd4a516c23123d94896f2ffae3a7c8bc102",
+      "afterSHA256": "7d6a0aa13d38119d91430e4b3aa4983291dff81cea094624801d442cc492c57b",
+      "edits": [
+        {
+          "start": 57,
+          "end": 57,
+          "old": [],
+          "new": [
+            "\n",
+            "    invoke-virtual {p0}, Lnc;->j()Lcom/autonavi/amapauto/jni/protocol/data/ALResponeData;\n",
+            "    move-result-object v0\n",
+            "    invoke-static {v0}, Lcom/yuminaga/motonav/CarEngineTap;->routeInfo(Ljava/lang/Object;)V\n"
+          ]
+        },
+        {
+          "start": 150,
+          "end": 150,
+          "old": [],
+          "new": [
+            "\n",
+            "    invoke-virtual {p0}, Lnc;->j()Lcom/autonavi/amapauto/jni/protocol/data/ALResponeData;\n",
+            "    move-result-object v0\n",
+            "    invoke-static {v0}, Lcom/yuminaga/motonav/CarEngineTap;->routeInfo(Ljava/lang/Object;)V\n"
+          ]
+        }
+      ]
+    },
+    {
+      "path": "com/autonavi/amapauto/background/AutoBackgroundService.smali",
+      "beforeSHA256": "8741f6c4259bc691aa6708e68c56ee4fb0a502746aa609d48a747c4e79d76b0f",
+      "afterSHA256": "3176c2df3f90bb6aab04a58b2d989c0cb82265138fcb4106f045c23f696eac6e",
+      "edits": [
+        {
+          "start": 323,
+          "end": 323,
+          "old": [],
+          "new": [
+            "    invoke-static {p0, v1}, Lcom/yuminaga/motonav/FusionCarUi;->notification(Landroid/content/Context;Landroid/app/Notification;)Landroid/app/Notification;\n",
+            "\n",
+            "    move-result-object v1\n",
+            "\n"
+          ]
+        },
+        {
+          "start": 498,
+          "end": 498,
+          "old": [],
+          "new": [
+            "\n",
+            "    move-result-object v0\n",
+            "\n",
+            "    invoke-static {p0, v0}, Lcom/yuminaga/motonav/FusionCarUi;->notification(Landroid/content/Context;Landroid/app/Notification;)Landroid/app/Notification;\n"
+          ]
+        }
+      ]
+    },
+    {
+      "path": "com/autonavi/amapauto/jni/AndroidDriveNavigation.smali",
+      "beforeSHA256": "dabfb14a348fa82ea5976244f55cf8b5b7f3a06cc98f5936a63aa80f74ac364d",
+      "afterSHA256": "e839692ee96388b19db4b03174726256d964a1d47451d207e89c1ab27f8dfa04",
+      "edits": [
+        {
+          "start": 318,
+          "end": 318,
+          "old": [],
+          "new": [
+            "    invoke-static {p0}, Lcom/yuminaga/motonav/CarEngineTap;->route(Ljava/lang/Object;)V\n",
+            "\n"
+          ]
+        }
+      ]
+    },
+    {
+      "path": "com/autonavi/amapauto/jni/protocol/AndroidProtocolExe.smali",
+      "beforeSHA256": "7dd87b18a9a1e01957bc56be1b387bb44f3ba1ff3bd99b505d07b14a5526318b",
+      "afterSHA256": "b61aeec2c1934ca5ba62d0b7f2856abb6b5227c204cafc6ac2c5c244c944a6c8",
+      "edits": [
+        {
+          "start": 1383,
+          "end": 1383,
+          "old": [],
+          "new": [
+            "    invoke-static {p0}, Lcom/yuminaga/motonav/CarEngineTap;->response(Ljava/lang/Object;)V\n",
+            "\n"
+          ]
+        },
+        {
+          "start": 2224,
+          "end": 2224,
+          "old": [],
+          "new": [
+            "\n",
+            "    invoke-static {p0}, Lcom/yuminaga/motonav/CarEngineTap;->routeInfo(Ljava/lang/Object;)V\n"
+          ]
+        },
+        {
+          "start": 3096,
+          "end": 3096,
+          "old": [],
+          "new": [
+            "\n",
+            "    invoke-static {p0}, Lcom/yuminaga/motonav/CarEngineTap;->nativeStatus(I)V\n"
+          ]
+        },
+        {
+          "start": 4605,
+          "end": 4605,
+          "old": [],
+          "new": [
+            "    invoke-static {p0}, Lcom/yuminaga/motonav/CarEngineTap;->position(Ljava/lang/Object;)V\n",
+            "\n"
+          ]
+        }
+      ]
+    },
+    {
+      "path": "com/autonavi/amapauto/widget/jni/AndroidWidgetNavi.smali",
+      "beforeSHA256": "5d95ea7a08fbd6924164b492509892908daae23365569f0ddd94acbbb63a9f53",
+      "afterSHA256": "40e4f3c319062509d4d67d75d97fa27487be3122f1f890a3487c00db4ea26b10",
+      "edits": [
+        {
+          "start": 28,
+          "end": 28,
+          "old": [],
+          "new": [
+            "\n",
+            "    const/4 v0, 0x0\n",
+            "    invoke-static {v0}, Lcom/yuminaga/motonav/CarEngineTap;->lane(Ljava/lang/Object;)V\n"
+          ]
+        },
+        {
+          "start": 162,
+          "end": 162,
+          "old": [],
+          "new": [
+            "\n",
+            "    invoke-static {p1}, Lcom/yuminaga/motonav/CarEngineTap;->lane(Ljava/lang/Object;)V\n"
+          ]
+        }
+      ]
+    }
+  ]
+}

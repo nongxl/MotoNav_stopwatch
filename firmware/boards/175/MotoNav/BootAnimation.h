@@ -21,6 +21,7 @@ static const Brand Brands[] = {
 static const int Count = sizeof(Brands) / sizeof(Brands[0]);
 static const int Off = Count;
 inline constexpr int valid(int id) { return id >= 0 && id <= Off ? id : 0; }
+inline constexpr uint32_t duration(int) { return Duration; }
 inline constexpr int parse(const char *s) {
   if (!s || !*s) return -1;
   int id = 0;

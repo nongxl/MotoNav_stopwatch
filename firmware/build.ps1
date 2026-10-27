@@ -32,6 +32,7 @@ $taskArgs+=@('compile','--jobs',"$Jobs",'--libraries',(Join-Path $taskRoot 'libr
     '--build-property',"compiler.c.extra_flags=$taskPrefixMap",
     '--build-property',"compiler.cpp.extra_flags=$taskPrefixMap",
     '--output-dir',$taskOutput,$taskSketch)
+if($Board -eq '175'){$taskArgs+=@('--build-property','compiler.c.elf.extra_flags=-Wl,--wrap=xTaskCreatePinnedToCore')}
 & $CliPath @taskArgs
 if($LASTEXITCODE -ne 0){throw "Arduino build failed ($LASTEXITCODE)"}
 $taskDest=Join-Path $taskRoot "dist/$Board/panel$PanelVariant"
