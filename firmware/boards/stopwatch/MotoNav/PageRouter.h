@@ -198,7 +198,7 @@ void dragMove(int dx, int dy, unsigned long now) {
     int d = dragHoriz ? dx : dy;
     dragSign = d > 0 ? 1 : -1;
     if (page == 2) { if (!dragHoriz || dragSign > 0) return; dragTarget = 0; }
-    else if (page == 1) dragTarget = 0;
+    else if (page == 1) { if (!dragHoriz || dragSign < 0) return; dragTarget = 0; }
     else if (page == 3) {
       // 倾角仪表在主界面下方：如果垂直向下滑动 (dy > 0, dragSign > 0)，返回主页 0
       if (dragHoriz || dragSign < 0) return;
