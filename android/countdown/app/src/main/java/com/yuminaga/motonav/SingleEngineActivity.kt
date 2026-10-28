@@ -311,7 +311,7 @@ class SingleEngineActivity:AppCompatActivity(){
             val p=LatLng(g.lat,g.lng)
             val positionChanged=poseUpdates.positionChanged(g.lat,g.lng)
             val headingChanged=poseUpdates.headingChanged(g.bearing)
-            if(position==null)position=map.map.addMarker(MarkerOptions().position(p).anchor(.5f,.5f).icon(BitmapDescriptorFactory.fromBitmap(icon())).zIndex(5f)) else if(positionChanged)position?.position=p
+            if(position==null)position=map.map.addMarker(MarkerOptions().position(p).anchor(.5f,.5f).icon(BitmapDescriptorFactory.fromBitmap(icon())).setFlat(true).rotateAngle(360f-g.bearing).zIndex(5f)) else if(positionChanged)position?.position=p
             if(headingChanged)position?.rotateAngle=360f-g.bearing
             if(!g.choosing&&follow&&poseUpdates.cameraChanged(g.lat,g.lng,g.bearing)){map.map.moveCamera(CameraUpdateFactory.newCameraPosition(CameraPosition(p,17f,0f,g.bearing)))}
         }

@@ -97,6 +97,8 @@ class NavActivity : ComponentActivity() {
     private var redirectedToSingle=false
     private var arrivedAt = 0L
     private var nearShown: Boolean? = null
+    private var bicyclePolyline: com.amap.api.maps.model.Polyline? = null
+    private var lastBicyclePathKey: String = ""
 
     @Suppress("DEPRECATION")
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -565,7 +567,33 @@ class NavActivity : ComponentActivity() {
         }
     }
 
+    private fun updateBicyclePolyline() {
+        val n = navi ?: return
+        val map = naviView.map ?: return
+        val isBicycle = NaviBridge.directRouteMode == LocalRouting.BICYCLE || ShareGuide.route?.isTravel == true
+        if (!isBicycle) return
+        val path = n.naviPath ?: return
+        val coords = path.coordList ?: return
+        if (coords.size < 2) return
+        val key = "${path.allLength}:${coords.size}:${coords.firstOrNull()?.latitude}"
+        if (bicyclePolyline == null || key != lastBicyclePathKey) {
+            try {
+                bicyclePolyline?.remove()
+                val pts = coords.map { com.amap.api.maps.model.LatLng(it.latitude, it.longitude) }
+                bicyclePolyline = map.addPolyline(
+                    com.amap.api.maps.model.PolylineOptions()
+                        .addAll(pts)
+                        .width(S.dp(this@NavActivity, 6f))
+                        .color(Color.parseColor("#00E5FF"))
+                        .zIndex(10f)
+                )
+                lastBicyclePathKey = key
+            } catch (_: Throwable) {}
+        }
+    }
+
     private fun update() {
+        updateBicyclePolyline()
         mapStatus.text = MapFeeder.loadingStatus() + "\n" +
             if(CarNavSync.requested)CarNavSync.summary() else if(emulate)
                 (if(TrafficLightOverlay.enabled)"模拟导航 · 实时灯读秒不参与模拟" else "模拟导航 · 不记录轨迹") else RideRecorder.status()
@@ -650,6 +678,7 @@ class NavActivity : ComponentActivity() {
     }
     override fun onDestroy() {
         handler.removeCallbacksAndMessages(null)
+        try { bicyclePolyline?.remove(); bicyclePolyline = null } catch (_: Throwable) {}
         if (!redirectedToSingle && isFinishing && !exited) { exited = true; NaviBridge.exitNavi(navigationEpoch) }
         if(::naviView.isInitialized)naviView.onDestroy()
         super.onDestroy()
