@@ -41,7 +41,7 @@ object TrafficLightOverlay {
     fun load(c:Context) {
         context=c.applicationContext
         val prefs=c.getSharedPreferences("motonav",Context.MODE_PRIVATE)
-        enabled=prefs.getBoolean("traffic_light_overlay",false)
+        enabled=prefs.getBoolean("traffic_light_overlay",true)
         // All lights in one upstream snapshot are displayed; no movement selector.
     }
     fun enable(c:Context,value:Boolean) {

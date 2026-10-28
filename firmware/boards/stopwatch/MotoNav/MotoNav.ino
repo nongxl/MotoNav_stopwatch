@@ -769,6 +769,33 @@ void loop() {
     drawStaleOverlay();
   }
 
+  // 红绿灯覆盖层实时调度（对齐微雪 1.75 版）
+  const uint32_t lightNow = millis();
+  if (!conn || !trafficLightLab.valid(lightNow)) trafficLightLab.clear();
+  const bool lightPreview = trafficLightPreviewUntil && (int32_t)(trafficLightPreviewUntil - lightNow) > 0;
+  if (!lightPreview) trafficLightPreviewUntil = 0;
+  const bool showLight = (trafficLightLab.valid(lightNow) || trafficLightFrame.valid(lightNow) || lightPreview) && conn && page == 0 && !sliding && !pairOn && !callOn && !fxOn && !staleShown;
+  static bool lightShown = false;
+  static uint32_t lightDrawAt = 0;
+
+  if (showLight) {
+    if (!lightShown || needFlush || lightNow - lightDrawAt >= 200) {
+      drawTrafficLightLab(lightNow);
+      lightDrawAt = lightNow;
+    }
+  } else if (lightShown && !pairOn && !callOn && !fxOn && !sliding) {
+    if (page == 2) musicDirty = true;
+    else if (page == 1) wxDirty = true;
+    else if (page == 3) leanDirty = true;
+    else if (inNav) navDirty = true;
+    else drawWaiting(conn ? WAIT_READY : WAIT_NOLINK);
+  }
+  if (lightShown != showLight) {
+    Serial.printf("TL OVERLAY visible=%d inNav=%d at=%lu valid=%d conn=%d page=%d sliding=%d pair=%d call=%d fx=%d stale=%d\n",
+      showLight, inNav, lightNow, trafficLightLab.valid(lightNow), conn, page, sliding, pairOn, callOn, fxOn, staleShown);
+  }
+  lightShown = showLight;
+
   animateCat();                                        // v3.6 首页猫猫动画
 
   // 6. 有变化才把画布推到屏幕（小地图帧异步推送，其他画面同步推送）

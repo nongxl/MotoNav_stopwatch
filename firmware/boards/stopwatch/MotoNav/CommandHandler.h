@@ -261,18 +261,23 @@ void handleText(const String &m) {
     navDirty = true;
     return;
   }
-  if (m.startsWith("#TLS,") || m.startsWith("#TL,")) {
-    if (trafficLightLab.receive(m.c_str(), millis())) navDirty = true;
-    return;
-  }
   if (m.startsWith("#TLA,")) {
-    if (trafficLightFrame.receive(m.c_str(), millis())) navDirty = true;
+    const int previous = trafficLightFrame.key;
+    const bool accepted = trafficLightFrame.receive(m.c_str(), millis());
+    if (!accepted || !trafficLightFrame.valid(millis()) || previous != trafficLightFrame.key) trafficLightLab.clear();
     return;
   }
   if (m == "#TLP,1") {
     trafficLightPreviewUntil = millis() + 5000;
     Serial.println("TL LAYOUT PREVIEW placeholders-only duration=5000");
-    navDirty = true;
+    return;
+  }
+  if (m.startsWith("#TL,") || m.startsWith("#TLS,")) {
+    Serial.printf("TL WIRE at=%lu %s\n", millis(), m.c_str());
+    bool accepted = trafficLightLab.receive(m.c_str(), millis());
+    Serial.printf("TL JUNCTION RX accepted=%d source=%d count=%u left=%d straight=%d right=%d other=%d\n",
+      accepted, trafficLightLab.source, trafficLightLab.count(millis()), trafficLightLab.phases[0].valid(millis()),
+      trafficLightLab.phases[1].valid(millis()), trafficLightLab.phases[2].valid(millis()), trafficLightLab.phases[3].valid(millis()));
     return;
   }
   if (m.startsWith("#n,")) { nightOn = m.substring(3).toInt() != 0; navDirty = true; return; }   // v3.0 夜间配色

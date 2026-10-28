@@ -82,6 +82,15 @@ void drawTrafficLightLab(uint32_t now) {
     if (present && p.wait > 0) printCentered(String("W") + p.wait, x + 14, ry + 28, 1, C_GREY);
     signature = signature * 31 + (present ? ((p.status + 2) * 1000 + seconds) : 0);
   }
+  static uint32_t previous = 0;
+  if (signature != previous) {
+    Serial.printf("TL JUNCTION DRAW layout=right-stack preview=%d count=%u L=%u S=%u R=%u inNav=%d map=%d\n",
+      preview, trafficLightLab.count(now),
+      trafficLightLab.phases[0].seconds(now), trafficLightLab.phases[1].seconds(now), trafficLightLab.phases[2].seconds(now),
+      inNav, mapModeActive());
+    previous = signature;
+  }
+  needFlush = true;
 }
 
 // 按当前全部状态画一整帧导航画面
