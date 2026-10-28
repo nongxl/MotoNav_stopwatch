@@ -311,9 +311,19 @@ class SingleEngineActivity:AppCompatActivity(){
             val p=LatLng(g.lat,g.lng)
             val positionChanged=poseUpdates.positionChanged(g.lat,g.lng)
             val headingChanged=poseUpdates.headingChanged(g.bearing)
-            if(position==null)position=map.map.addMarker(MarkerOptions().position(p).anchor(.5f,.5f).icon(BitmapDescriptorFactory.fromBitmap(icon())).setFlat(true).rotateAngle(360f-g.bearing).zIndex(5f)) else if(positionChanged)position?.position=p
-            if(headingChanged)position?.rotateAngle=360f-g.bearing
-            if(!g.choosing&&follow&&poseUpdates.cameraChanged(g.lat,g.lng,g.bearing)){map.map.moveCamera(CameraUpdateFactory.newCameraPosition(CameraPosition(p,17f,0f,g.bearing)))}
+            val targetBearing = if(follow) 0f else g.bearing
+            if(position==null){
+                position=map.map.addMarker(MarkerOptions().position(p).anchor(.5f,.5f)
+                    .icon(BitmapDescriptorFactory.fromBitmap(icon()))
+                    .setFlat(false)
+                    .rotateAngle(targetBearing).zIndex(5f).title("当前位置"))
+            } else {
+                if(positionChanged) position?.position=p
+                if(headingChanged) position?.rotateAngle=targetBearing
+            }
+            if(!g.choosing&&follow&&poseUpdates.cameraChanged(g.lat,g.lng,g.bearing)){
+                map.map.animateCamera(CameraUpdateFactory.newCameraPosition(CameraPosition(p,17f,0f,g.bearing)), 500L, null)
+            }
         }
         if(resumed)handler.postDelayed(this,500)
     }}

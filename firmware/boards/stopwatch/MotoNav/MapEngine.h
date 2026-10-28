@@ -2282,7 +2282,7 @@ void drawMapFrame() {
   profMark(9);
   hasCam = saveCam; tripOn = saveTrip;
   drawNavHints(300);                                    // v5.0 重新规划中 / 更快路线 / GPS 信号弱
-  drawBattery(CX - 21, 16, true);                         // 电量（车速上方居中，内嵌电量数字带黑底）
+  drawBattery(CX - 28, 14, true);                         // 电量（车速上方居中，内嵌电量数字带黑底）
   drawTrafficLightLab(millis());                        // 红绿灯竖排卡片
   profMark(10);
   // v2.9 小地图里不画顶部的蓝牙小圆点（会和 N 标记重叠；能收到地图就说明连着）
