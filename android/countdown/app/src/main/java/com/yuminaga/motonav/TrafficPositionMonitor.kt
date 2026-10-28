@@ -33,7 +33,7 @@ object TrafficPositionMonitor {
         if(c.packageName!="com.autonavi.amapauto" || manager!=null)return
         try{
             val m=c.getSystemService(Context.LOCATION_SERVICE) as LocationManager
-            m.requestLocationUpdates(LocationManager.GPS_PROVIDER,1000L,0f,listener,Looper.getMainLooper())
+            m.requestLocationUpdates(LocationManager.GPS_PROVIDER,2000L,2f,listener,Looper.getMainLooper())
             manager=m
         }catch(e:RuntimeException){Log.w("MotoNavLightOverlay","GPS stop observer unavailable; SDK location fallback remains",e)}
     }

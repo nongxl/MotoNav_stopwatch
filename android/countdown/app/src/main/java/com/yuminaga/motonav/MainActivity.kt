@@ -1597,6 +1597,8 @@ class MainActivity : AppCompatActivity() {
 
     override fun onResume() {
         super.onResume()
+        BleLink.resetScanBackoff()
+        NavService.updateWakeLock()
         uiResumed=true;handler.removeCallbacks(refreshTask);refresh()
         if(!FusionFirstUse.returning(this))FusionCarUi.closeConsole(this)
         if (searchInput?.text.isNullOrBlank()) refreshHomeIdle?.invoke()     // v6.3 选路线页回来：更新“最近去过”

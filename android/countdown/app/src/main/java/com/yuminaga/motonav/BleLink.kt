@@ -212,13 +212,16 @@ object BleLink {
             triedDirect = false // A failed direct attempt gets a complete scan before trying again.
             val scanner = ad.bluetoothLeScanner ?: run { status = "无法扫描"; scheduleRetry(); return }
             val filters = listOf(ScanFilter.Builder().setServiceUuid(ParcelUuid(SERVICE_UUID)).build())
-            val settings = ScanSettings.Builder().setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY).build()
+            // 优化功耗：初次扫描使用 BALANCED 均衡模式，多次未找到则降级为 LOW_POWER 低功耗模式，杜绝 100% 满负荷发热
+            val scanMode = if (scanRetryCount < 2) ScanSettings.SCAN_MODE_BALANCED else ScanSettings.SCAN_MODE_LOW_POWER
+            val settings = ScanSettings.Builder().setScanMode(scanMode).build()
             scanning = true
             status = "正在搜索圆屏…"
             candidate = null
             scanStartAt = now()
             scanner.startScan(filters, settings, scanCallback)
-            handler.postDelayed(scanTimeout, SCAN_TIMEOUT_MS)
+            val timeoutMs = if (scanRetryCount < 2) 8000L else 6000L
+            handler.postDelayed(scanTimeout, timeoutMs)
             handler.postDelayed(pickCandidate, PREFER_MS)          // v7.8
         } catch (e: SecurityException) {
             scanning = false
@@ -235,12 +238,26 @@ object BleLink {
         }
     }
 
+    private var scanRetryCount = 0
+
+    fun resetScanBackoff() {
+        scanRetryCount = 0
+    }
+
     private val retryRunnable = Runnable { appContext?.let { connect(it) } }
 
     private fun scheduleRetry() {
         if (!auto) return
         handler.removeCallbacks(retryRunnable)
-        handler.postDelayed(retryRunnable, RETRY_MS)
+        scanRetryCount++
+        // 指数退避 (Exponential Backoff)：5s -> 15s -> 30s -> 60s，未通电待机时大幅节省手机电量
+        val delay = when {
+            scanRetryCount <= 1 -> 5000L
+            scanRetryCount == 2 -> 15000L
+            scanRetryCount == 3 -> 30000L
+            else -> 60000L
+        }
+        handler.postDelayed(retryRunnable, delay)
     }
 
     private fun stopScan() {
@@ -287,6 +304,7 @@ object BleLink {
 
     private fun connectDevice(device: BluetoothDevice, name: String) {
         stopScan()
+        scanRetryCount = 0
         candidate = null
         handler.removeCallbacks(retryRunnable)
         screenName = name

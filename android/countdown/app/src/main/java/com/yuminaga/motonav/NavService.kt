@@ -24,6 +24,18 @@ class NavService : Service() {
         private const val CHANNEL_ID = "motonav_running"
         private const val NOTIFY_ID = 1
         @Volatile var running = false
+        @Volatile private var instance: NavService? = null
+
+        fun updateWakeLock() {
+            val s = instance ?: return
+            val shouldHold = NavigationUi.active()
+            val wl = s.wakeLock ?: return
+            if (shouldHold && !wl.isHeld) {
+                try { wl.acquire(6 * 60 * 60 * 1000L) } catch (_: Exception) {}
+            } else if (!shouldHold && wl.isHeld) {
+                try { wl.release() } catch (_: Exception) {}
+            }
+        }
 
         fun start(context: Context) {
             val i = Intent(context, NavService::class.java)
@@ -60,12 +72,13 @@ class NavService : Service() {
         }
         running = true
 
-        // 保持 CPU 运行（屏幕可以关），否则锁屏后蓝牙发送和距离推算会变慢
+        // 优化功耗：按需延迟申请 WakeLock，避免服务一旦启动永久唤醒 CPU 导致待机耗电
+        instance = this
         val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
         wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "MotoNav:nav").apply {
             setReferenceCounted(false)
-            acquire()
         }
+        updateWakeLock()
 
         BleLink.startAuto(this)
         TrafficLightOverlay.start(this)
@@ -92,7 +105,7 @@ class NavService : Service() {
         TrafficPositionMonitor.stop()
         BleLink.stopAuto()
         try { wakeLock?.release() } catch (_: Exception) {}
-        wakeLock = null
+        wakeLock = null; instance = null
         super.onDestroy()
     }
 
