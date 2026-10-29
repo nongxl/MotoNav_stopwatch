@@ -345,15 +345,14 @@ class MotorWebNavActivity : AppCompatActivity() {
             if(!g.lat.isNaN()){
                 val pose=LatLng(g.lat,g.lng)
                 val positionChanged=poseUpdates.positionChanged(g.lat,g.lng)
-                val headingChanged=poseUpdates.headingChanged(g.bearing)
-                val targetBearing = if(follow) 0f else g.bearing
+                val targetBearing = if(follow) 0f else 360f-g.bearing
                 if(marker==null){
                     marker=map.map.addMarker(MarkerOptions().position(pose).anchor(.5f,.5f)
                         .icon(BitmapDescriptorFactory.fromBitmap(carBitmap()))
                         .apply{setFlat(false)}.rotateAngle(targetBearing).zIndex(5f).title("当前位置"))
                 } else {
                     if(positionChanged) marker?.position=pose
-                    if(headingChanged) marker?.rotateAngle=targetBearing
+                    if(marker?.rotateAngle != targetBearing) marker?.rotateAngle=targetBearing
                 }
                 if(follow && poseUpdates.cameraChanged(g.lat,g.lng,g.bearing)){
                     map.map.animateCamera(CameraUpdateFactory.newCameraPosition(CameraPosition(pose,17f,0f,g.bearing)), 500L, null)

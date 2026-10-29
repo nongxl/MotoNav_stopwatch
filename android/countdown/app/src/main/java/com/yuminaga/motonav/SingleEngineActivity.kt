@@ -310,8 +310,7 @@ class SingleEngineActivity:AppCompatActivity(){
         if(!g.lat.isNaN()){
             val p=LatLng(g.lat,g.lng)
             val positionChanged=poseUpdates.positionChanged(g.lat,g.lng)
-            val headingChanged=poseUpdates.headingChanged(g.bearing)
-            val targetBearing = if(follow) 0f else g.bearing
+            val targetBearing = if(follow) 0f else 360f-g.bearing
             if(position==null){
                 position=map.map.addMarker(MarkerOptions().position(p).anchor(.5f,.5f)
                     .icon(BitmapDescriptorFactory.fromBitmap(icon()))
@@ -319,7 +318,7 @@ class SingleEngineActivity:AppCompatActivity(){
                     .rotateAngle(targetBearing).zIndex(5f).title("当前位置"))
             } else {
                 if(positionChanged) position?.position=p
-                if(headingChanged) position?.rotateAngle=targetBearing
+                if(position?.rotateAngle != targetBearing) position?.rotateAngle=targetBearing
             }
             if(!g.choosing&&follow&&poseUpdates.cameraChanged(g.lat,g.lng,g.bearing)){
                 map.map.animateCamera(CameraUpdateFactory.newCameraPosition(CameraPosition(p,17f,0f,g.bearing)), 500L, null)

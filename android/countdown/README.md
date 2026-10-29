@@ -1,4 +1,4 @@
-# MotoNav 读秒版 8.3.26-single.30
+# MotoNav 读秒版 8.3.26-single.31
 
 这是当前读秒版的完整自主源码与构建工具，和 [普通版 8.3.26](../standard/README.md) 分开维护。手机只安装一个最终 APK，使用现有的单引擎导航流程。
 
@@ -6,6 +6,8 @@
 
 ## 这一版包含什么
 
+- 省电优化基于 **[@nongxl](https://github.com/nongxl)** 的 **[PR #9](https://github.com/zyn950929/MotoNav/pull/9)**（[原始提交](https://github.com/zyn950929/MotoNav/commit/a57019d5f161625b4da6c6fdafea62dfe4bcd503)）：蓝牙扫描分级与重连退避、按需持有唤醒锁、独立 GPS 观察降频，以及地图镜头、车标朝向和预览修正。
+- 本项目在贡献基础上补入巡航和长途导航唤醒保护、选路／到达释放、停车定位更新、认证后重置退避及切换跟随模式刷新。未完成实际耗电量测，具体说明见 [single.31 更新记录](../../docs/RELEASE-ANDROID-8.3.26-single.31.md)。
 - 修复网页摩托车后台路线已规划、导航未实际开始而缺少读秒：明确启动所选路线，连续检查真实导航状态；未启动时有限重试，运行后确实停止时最多恢复两次。正常停车和引导回调短暂停顿不会触发重启，主动结束导航后撤销监测。
 - 驾车选路及 60／100／120 km/h 模拟速度、网页摩托车多方案规划、自行车与分享入口。
 - 摩托车／驾车最多三个手动途经点，支持搜索加油站、排序、替换与删除；网页摩托车历史保存途经点顺序，支持收藏与历史重选。
@@ -50,7 +52,7 @@ python build-countdown.py --apktool 'D:\Tools\apktool.jar' --gradle 'D:\Tools\gr
 从安装工具、申请 Key 到烧录圆屏的完整步骤，见 [安卓小白 PDF 教程](../../docs/MotoNav-Android-WorkBuddy-Guide.pdf)。
 
 ```text
-请从 https://github.com/zyn950929/MotoNav 的 main 分支获取最新源码，打包读秒版 8.3.26-single.30，工程在 android/countdown；已有旧源码时先更新，不要回到旧版本。
+请从 https://github.com/zyn950929/MotoNav 的 main 分支获取最新源码，打包读秒版 8.3.26-single.31，工程在 android/countdown；已有旧源码时先更新，不要回到旧版本。
 请准备需要的 Python 3、JDK 17、Android SDK 35/build-tools 35.0.0、Gradle 8.10.2、apktool 2.12.1 和 Zig 0.13.0；下载慢时换可信国内镜像。
 使用根目录“一键打包-读秒版.bat”或 Build-Countdown.ps1 完成完整构建，让脚本自动从仓库 Release 获取并校验 provider.apk，不要只交付 Gradle 中间 APK。
 最终包名保持 com.autonavi.amapauto，生成并保留我的本机签名；已有签名就沿用。请检查最终安装包及签名，告诉我 APK 完整路径、包名和最终签名证书的十六进制 SHA1（不是 APK 文件哈希），保存 Application-info.txt，并帮我打开成品文件夹。
@@ -59,9 +61,9 @@ python build-countdown.py --apktool 'D:\Tools\apktool.jar' --gradle 'D:\Tools\gr
 
 ## 成品与升级资料
 
-成品是 **`output/MotoNav-8.3.26-single.30-countdown.apk`**。`app/build/outputs/` 中的 Gradle APK 只是中间文件，不能当完整读秒版安装。Android Studio 可以打开本目录编辑和编译自主源码；完整包仍由上面的入口生成。
+成品是 **`output/MotoNav-8.3.26-single.31-countdown.apk`**。`app/build/outputs/` 中的 Gradle APK 只是中间文件，不能当完整读秒版安装。Android Studio 可以打开本目录编辑和编译自主源码；完整包仍由上面的入口生成。
 
-最终包名固定为 **`com.autonavi.amapauto`**，实际证书的十六进制 SHA1 会打印并保存到 `output/Application-info.txt`；用这两项申请自己的高德 Android Key。最终包系统版本字段保留兼容组件要求，MotoNav 内显示 `8.3.26-single.30`。私下备份并沿用 `.local/debug.keystore`，不要上传或群发。已安装同包名但不同签名的软件不能直接覆盖，先自行备份数据再决定安装方式。
+最终包名固定为 **`com.autonavi.amapauto`**，实际证书的十六进制 SHA1 会打印并保存到 `output/Application-info.txt`；用这两项申请自己的高德 Android Key。最终包系统版本字段保留兼容组件要求，MotoNav 内显示 `8.3.26-single.31`。私下备份并沿用 `.local/debug.keystore`，不要上传或群发。已安装同包名但不同签名的软件不能直接覆盖，先自行备份数据再决定安装方式。
 
 `inputs/`、`car-code/`、`car-resources/`、`moto-code/`、`framework/`、`.local/`、`output/` 都是本机构建产物，已经忽略，不属于公开源码。构建过程中不安装手机、不发布仓库。
 
@@ -75,6 +77,8 @@ python build-countdown.py --apktool 'D:\Tools\apktool.jar' --gradle 'D:\Tools\gr
 
 JDK 17 配置好后：`python tests/run.py`。公开回归使用合成道路，不包含维护者的日常行程或设备录制日志。
 
-single.30 已在手机检查网页摩托车普通启动、锁屏启动、后台实际停止后的自动恢复及主动结束后的清理；测试期间收到了真实灯色和秒数。启动问题本轮未稳定复现原来的触发条件，不能把防护和恢复测试写成原故障已稳定复现，也不等于修复后的实际道路复测通过。新增原生状态与恢复回归，原有方向和路口检查保留。
+single.31 已完成自主源码构建、完整集成与19组策略回归；实际功耗尚未量测。
+
+此前 single.30 已在手机检查网页摩托车普通启动、锁屏启动、后台实际停止后的自动恢复及主动结束后的清理；测试期间收到了真实灯色和秒数。启动问题本轮未稳定复现原来的触发条件，不能把防护和恢复测试写成原故障已稳定复现，也不等于修复后的实际道路复测通过。新增原生状态与恢复回归，原有方向和路口检查保留。
 
 此前 single.29 已验证途经点、加油站、历史重选与去重；真实灯源配合虚拟 GPS 完成三次红灯等待后对应绿灯起步，后续一个路口缺少匹配数据而结束。完整构建和签名的本轮结果及边界见 [验证记录](../../docs/VERIFY-2026-10-27.md)。

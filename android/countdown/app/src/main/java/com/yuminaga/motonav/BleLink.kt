@@ -57,8 +57,6 @@ object BleLink {
     private val CCCD_UUID: UUID = UUID.fromString("00002902-0000-1000-8000-00805f9b34fb")
     private const val BULK_HEADER = 15
 
-    private const val RETRY_MS = 5000L
-    private const val SCAN_TIMEOUT_MS = 15000L
     private const val PREFER_MS = 4000L          // v7.8 先等上次那块圆屏这么久
     private const val HEARTBEAT_MS = 2000L
     private const val MAX_WRITE = 500          // 圆屏单个数据包最多收 512 字节，留点余量
@@ -242,6 +240,10 @@ object BleLink {
 
     fun resetScanBackoff() {
         scanRetryCount = 0
+        if (auto && !scanning && gatt == null) {
+            handler.removeCallbacks(retryRunnable)
+            handler.post(retryRunnable)
+        }
     }
 
     private val retryRunnable = Runnable { appContext?.let { connect(it) } }
@@ -249,7 +251,7 @@ object BleLink {
     private fun scheduleRetry() {
         if (!auto) return
         handler.removeCallbacks(retryRunnable)
-        scanRetryCount++
+        scanRetryCount = (scanRetryCount + 1).coerceAtMost(4)
         // 指数退避 (Exponential Backoff)：5s -> 15s -> 30s -> 60s，未通电待机时大幅节省手机电量
         val delay = when {
             scanRetryCount <= 1 -> 5000L
@@ -304,7 +306,6 @@ object BleLink {
 
     private fun connectDevice(device: BluetoothDevice, name: String) {
         stopScan()
-        scanRetryCount = 0
         candidate = null
         handler.removeCallbacks(retryRunnable)
         screenName = name
@@ -373,6 +374,7 @@ object BleLink {
 
     private fun markVerified() {
         if (verified) return
+        scanRetryCount = 0 // Reset after authentication, not every failed connection attempt.
         verified = true; pairHint = ""; staleCount = 0; needUnbond = false
         gatt?.device?.address?.let { saveLast(it); skipAddr = "" }
         trace("authenticated")

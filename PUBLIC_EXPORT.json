@@ -10,7 +10,7 @@
   "anonymousBuildSignatureVerified": true,
   "privateLogsIncluded": false,
   "originalGitHistoryIncluded": false,
-  "date": "2026-10-27",
+  "date": "2026-10-29",
   "namespace": "com.example.motonav",
   "existingLogicChecks": 41,
   "showcaseIncluded": true,
@@ -30,7 +30,7 @@
   "iosFirmwareVersion": "7.12.10-pages.4",
   "androidFirmwareVersion": "7.12.10-pages.4",
   "firmwareShared": true,
-  "androidReleaseNotes": "docs/RELEASE-2026-10-27.md",
+  "androidReleaseNotes": "docs/RELEASE-ANDROID-8.3.26-single.31.md",
   "androidArrivalFixDeviceTest": "Titan 2 / firmware 7.8.12 / simulated navigation / user confirmed",
   "androidCurrentRepositoryFirmwareRetest": false,
   "androidUnsignedReleaseBuildVerified": true,
@@ -57,7 +57,7 @@
   "amapOnlyChecks": 3037,
   "fourStyleRasterChecks": 22941,
   "verificationNotes": "docs/VERIFY-2026-10-27.md",
-  "androidFusionVersion": "8.3.26-single.29",
+  "androidFusionVersion": "8.3.26-single.31",
   "iosSourceOnly": true,
   "iosNewIPAIncluded": false,
   "personalRebelBootIncluded": false,
@@ -67,7 +67,7 @@
   "releaseNotes": "docs/RELEASE-2026-10-25.md",
   "androidFusionBuildVerified": true,
   "androidFusionSignatureAlignmentVerified": true,
-  "androidFusionPolicyTestGroups": 7,
+  "androidFusionPolicyTestGroups": 19,
   "publicGenericFirmwareBuildVerified": true,
   "publicGenericFirmwareDeviceFlashed": false,
   "publicGenericFirmwareApplicationBytes": 1286807,
@@ -86,7 +86,7 @@
       "countdown": false
     },
     "countdown": {
-      "version": "8.3.26-single.29",
+      "version": "8.3.26-single.31",
       "source": "android/countdown",
       "countdown": true,
       "fullBuildRequiresUserSuppliedDependency": true
@@ -97,5 +97,9 @@
   "countdownCompleteBuildVerified": true,
   "publicFirmwareDeviceTested": false,
   "firmwareCorePersonalVariantDeviceTested": true,
-  "androidAPKPublishedThisUpdate": false
+  "androidAPKPublishedThisUpdate": false,
+  "androidPowerOptimizationAuthor": "nongxl",
+  "androidPowerOptimizationSourcePR": "https://github.com/zyn950929/MotoNav/pull/9",
+  "androidPowerOptimizationSourceCommit": "a57019d5f161625b4da6c6fdafea62dfe4bcd503",
+  "androidPowerConsumptionMeasured": false
 }

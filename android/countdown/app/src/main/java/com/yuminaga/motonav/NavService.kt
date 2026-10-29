@@ -11,6 +11,10 @@ import android.content.pm.ServiceInfo
 import android.os.Build
 import android.os.IBinder
 import android.os.PowerManager
+import android.os.Handler
+import android.os.Looper
+import android.os.SystemClock
+import android.util.Log
 import androidx.core.app.NotificationCompat
 
 /**
@@ -28,12 +32,22 @@ class NavService : Service() {
 
         fun updateWakeLock() {
             val s = instance ?: return
-            val shouldHold = NavigationUi.active()
+            // Cruise is intentionally excluded from NavigationUi.active(). Arrival
+            // retains the single-engine result page but no longer needs CPU time.
+            val guidance = if (SingleEngineSession.owns)
+                !SingleEngineSession.choosing && !SingleEngineSession.arrived
+                else NavigationUi.active()
+            val shouldHold = guidance || NaviBridge.cruising
             val wl = s.wakeLock ?: return
-            if (shouldHold && !wl.isHeld) {
-                try { wl.acquire(6 * 60 * 60 * 1000L) } catch (_: Exception) {}
+            val now = SystemClock.elapsedRealtime()
+            if (shouldHold && (!wl.isHeld || now >= s.wakeRenewAt)) {
+                try {
+                    wl.acquire(6 * 60 * 60 * 1000L)
+                    s.wakeRenewAt = now + 5 * 60 * 60 * 1000L
+                } catch (e: RuntimeException) { Log.w("MotoNavPower", "Wake lock unavailable", e) }
             } else if (!shouldHold && wl.isHeld) {
                 try { wl.release() } catch (_: Exception) {}
+                s.wakeRenewAt = 0L
             }
         }
 
@@ -48,6 +62,15 @@ class NavService : Service() {
     }
 
     private var wakeLock: PowerManager.WakeLock? = null
+    private var wakeRenewAt = 0L
+    private val powerHandler = Handler(Looper.getMainLooper())
+    private val powerCheck = object : Runnable {
+        override fun run() {
+            if (instance !== this@NavService) return
+            updateWakeLock()
+            powerHandler.postDelayed(this, 30_000L)
+        }
+    }
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -79,6 +102,9 @@ class NavService : Service() {
             setReferenceCounted(false)
         }
         updateWakeLock()
+        // Covers navigation lifecycle paths that do not start/stop a ride recorder,
+        // and renews the bounded lock on long journeys. Does not wake an idle CPU.
+        powerHandler.postDelayed(powerCheck, 30_000L)
 
         BleLink.startAuto(this)
         TrafficLightOverlay.start(this)
@@ -94,6 +120,8 @@ class NavService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int = START_STICKY
 
     override fun onDestroy() {
+        instance = null
+        powerHandler.removeCallbacks(powerCheck)
         SingleEngineSession.disarm()
         WebMotorGuide.stop()
         RideRecorder.stop()
