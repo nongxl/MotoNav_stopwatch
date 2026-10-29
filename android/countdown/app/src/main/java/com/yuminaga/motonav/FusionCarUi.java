@@ -127,8 +127,8 @@ public final class FusionCarUi implements Application.ActivityLifecycleCallbacks
         button.setText("返回 MotoNav");button.setAllCaps(false);
         button.setTextColor(Color.WHITE);button.setBackgroundColor(0xff352b47);
         float density=a.getResources().getDisplayMetrics().density;
-        FrameLayout.LayoutParams p=new FrameLayout.LayoutParams((int)(160*density),(int)(48*density),Gravity.TOP|Gravity.END);
-        p.topMargin=(int)(8*density);p.rightMargin=(int)(8*density);
+        FrameLayout.LayoutParams p=new FrameLayout.LayoutParams((int)(160*density),(int)(48*density),Gravity.BOTTOM|Gravity.START);
+        p.bottomMargin=(int)(8*density);p.leftMargin=(int)(8*density);
         content.addView(button,p);
         button.setOnClickListener(v->{
             String destination="com.yuminaga.motonav.MainActivity";
