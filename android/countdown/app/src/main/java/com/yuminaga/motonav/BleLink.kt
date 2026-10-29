@@ -94,7 +94,7 @@ object BleLink {
         val old = gatt
         gatt = null
         old?.let { session.clear(it) }
-        ready = false; verified = false; buildingsSupported = false
+        ready = false; verified = false; buildingsSupported = false; zmapSupported = false
         capabilityQuerySent = false; rxChar = null; mtu = 23
         phyText = "?"; burstStart = 0L
         synchronized(lock) { writing = false; queue.clear(); bulkQ.clear() }
@@ -133,6 +133,7 @@ object BleLink {
     private var burstStart = 0L
     private var burstBytes = 0L
     @Volatile var buildingsSupported = false
+    @Volatile var zmapSupported = false
     @Volatile var screenStats = ""                    // v2.0.1 圆屏发来的帧率统计
     @Volatile var screenProf = ""                     // v5.8 每帧各步骤用时
     @Volatile var screenFps = ""                      // v2.6 给新界面用：帧率、屏幕速度、快速刷屏
@@ -379,6 +380,7 @@ object BleLink {
         gatt?.device?.address?.let { saveLast(it); skipAddr = "" }
         trace("authenticated")
         val g = gatt ?: return
+        try { g.requestConnectionPriority(BluetoothGatt.CONNECTION_PRIORITY_HIGH) } catch (_: Exception) {}
         if (ready) {
             session.move(g, Phase.AUTH, Phase.READY, now(), 0)
             status = "已连接（高速模式，数据包 ${maxWrite()} 字节）"
@@ -393,6 +395,10 @@ object BleLink {
         if(msg=="CAP,HID,1") { handler.post { sendEvent("#HM,0") }; return }
         if(msg=="CAP,BLD,1") {
             handler.post { if(!buildingsSupported) { buildingsSupported=true;MapFeeder.onBuildingCapability() } }
+            return
+        }
+        if(msg=="CAP,ZMAP,1") {
+            handler.post { if(!zmapSupported) { zmapSupported=true;MapFeeder.onZmapCapability() } }
             return
         }
         val p = msg.split(',')
@@ -432,6 +438,12 @@ object BleLink {
             val t = p[1].toIntOrNull() ?: return
             val id = p[2].toIntOrNull() ?: return
             MapFeeder.onAck(t, id)
+            return
+        }
+        if (p.size >= 3 && p[0] == "N") {
+            val t = p[1].toIntOrNull() ?: return
+            val id = p[2].toIntOrNull() ?: return
+            MapFeeder.onNack(t, id)
         }
     }
 
@@ -505,11 +517,13 @@ object BleLink {
             if (c.uuid == TX_UUID) onCurrent(g) { onNotify(copy) }
         }
 
-        override fun onCharacteristicWrite(g: BluetoothGatt, c: BluetoothGattCharacteristic, st: Int) = onCurrent(g) {
-            if (c.uuid != RX_UUID) return@onCurrent
+        override fun onCharacteristicWrite(g: BluetoothGatt, c: BluetoothGattCharacteristic, st: Int) {
+            if (c.uuid != RX_UUID) return
             if (st != BluetoothGatt.GATT_SUCCESS) {
-                failConnection(g, "圆屏数据发送失败（$st）"); return@onCurrent
+                onCurrent(g) { failConnection(g, "圆屏数据发送失败（$st）") }
+                return
             }
+            if (gatt !== g || !session.owns(g)) return
             synchronized(lock) { writing = false }
             pump()
         }
@@ -775,9 +789,9 @@ object BleLink {
                     burstBytes += b.data.size
                     if (bulkQ.isEmpty()) {
                         val dt = (writeStartedAt - burstStart) / 1000.0
-                        if (burstBytes >= 8 * 1024 && dt > 0.05) {
+                        if (burstBytes >= 2 * 1024 && dt > 0.03) {
                             lastRateKBs = burstBytes / 1024.0 / dt
-                            lastBurstKB = (burstBytes / 1024).toInt()
+                            lastBurstKB = maxOf(1, (burstBytes / 1024).toInt())
                             if (lastRateKBs > bestRateKBs) bestRateKBs = lastRateKBs
                         }
                         burstStart = 0L
