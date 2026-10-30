@@ -4,8 +4,7 @@ $ErrorActionPreference='Stop'
 $root=$PSScriptRoot
 $project=Join-Path $root 'android/standard'
 $tools=Join-Path $root '.tools'
-New-Item -ItemType Directory -Force $tools | Out-Null
-if(-not $env:GRADLE_USER_HOME){$env:GRADLE_USER_HOME=Join-Path $tools 'gradle-cache'}
+
 function Download($url,$path) {
     if(-not(Test-Path -LiteralPath $path)) {
         Write-Host "Downloading $url"
@@ -13,9 +12,25 @@ function Download($url,$path) {
         Move-Item -LiteralPath "$path.part" -Destination $path -Force
     }
 }
+
+# 1. Auto-detect Java Home
+if(-not $JavaPath){
+    if($env:JAVA_HOME -and (Test-Path (Join-Path $env:JAVA_HOME 'bin/java.exe'))){
+        $JavaPath=$env:JAVA_HOME
+    } else {
+        $cmdJava=Get-Command java -ErrorAction SilentlyContinue
+        if($cmdJava){
+            $binDir=Split-Path $cmdJava.Source
+            if(Test-Path (Join-Path $binDir 'keytool.exe')){
+                $JavaPath=Split-Path $binDir
+            }
+        }
+    }
+}
 if(-not $JavaPath){
     $jdk=Get-ChildItem -Path "$tools/jdk/*/bin/java.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
     if(-not $jdk){
+        New-Item -ItemType Directory -Force $tools | Out-Null
         Download 'https://api.adoptium.net/v3/binary/latest/21/ga/windows/x64/jdk/hotspot/normal/eclipse' "$tools/jdk.zip"
         Expand-Archive -LiteralPath "$tools/jdk.zip" -DestinationPath "$tools/jdk" -Force
         $jdk=Get-ChildItem -Path "$tools/jdk/*/bin/java.exe" | Select-Object -First 1
@@ -24,10 +39,40 @@ if(-not $JavaPath){
 }
 $env:JAVA_HOME=$JavaPath
 $env:PATH="$JavaPath\bin;"+$env:PATH
-if(-not $SdkPath){$SdkPath=Join-Path $tools 'android-sdk'}
+
+# 2. Auto-detect Android SDK
+if(-not $SdkPath){
+    $candidateProps=@(
+        (Join-Path $project 'local.properties'),
+        (Join-Path $root 'android/countdown/local.properties')
+    )
+    foreach($lp in $candidateProps){
+        if(Test-Path $lp){
+            $line=Get-Content $lp | Where-Object { $_ -match '^sdk\.dir\s*=\s*(.+)$' } | Select-Object -First 1
+            if($line){
+                $val=($line -split '=',2)[1].Trim()
+                $val=$val.Replace('\: ',': ').Replace('\:',':').Replace('\/','/').Replace('\','/')
+                if(Test-Path $val){$SdkPath=$val; break}
+            }
+        }
+    }
+    if(-not $SdkPath -and $env:ANDROID_HOME -and (Test-Path $env:ANDROID_HOME)){$SdkPath=$env:ANDROID_HOME}
+    if(-not $SdkPath -and $env:ANDROID_SDK_ROOT -and (Test-Path $env:ANDROID_SDK_ROOT)){$SdkPath=$env:ANDROID_SDK_ROOT}
+    if(-not $SdkPath){
+        $defaultSdk=Join-Path $env:USERPROFILE 'AppData/Local/Android/Sdk'
+        if(Test-Path $defaultSdk){$SdkPath=$defaultSdk}
+    }
+    if(-not $SdkPath){$SdkPath=Join-Path $tools 'android-sdk'}
+}
 $env:ANDROID_HOME=$SdkPath
 $env:ANDROID_SDK_ROOT=$SdkPath
-if(-not(Test-Path "$SdkPath/platforms/android-35/android.jar") -or -not(Test-Path "$SdkPath/build-tools/35.0.0/apksigner.bat")) {
+
+# 3. Check apksigner and build-tools
+$apksigner=Get-ChildItem -Path "$SdkPath/build-tools/*/apksigner.bat" -ErrorAction SilentlyContinue | Sort-Object FullName -Descending | Select-Object -First 1
+$hasPlatform=Test-Path "$SdkPath/platforms/android-35/android.jar"
+
+if(-not $apksigner -or -not $hasPlatform) {
+    New-Item -ItemType Directory -Force $tools | Out-Null
     $manager=Join-Path $SdkPath 'cmdline-tools/latest/bin/sdkmanager.bat'
     if(-not(Test-Path $manager)) {
         Download 'https://dl.google.com/android/repository/commandlinetools-win-15859902_latest.zip' "$tools/sdk-tools.zip"
@@ -40,7 +85,15 @@ if(-not(Test-Path "$SdkPath/platforms/android-35/android.jar") -or -not(Test-Pat
     if($LASTEXITCODE -ne 0){throw 'SDK license setup failed.'}
     & $manager "--sdk_root=$SdkPath" 'platforms;android-35' 'build-tools;35.0.0' 'platform-tools'
     if($LASTEXITCODE -ne 0){throw 'SDK installation failed.'}
+    $apksigner=Get-ChildItem -Path "$SdkPath/build-tools/*/apksigner.bat" | Sort-Object FullName -Descending | Select-Object -First 1
 }
+
+Write-Host "Building MotoNav Standard with:" -ForegroundColor Cyan
+Write-Host "  Java:    $JavaPath"
+Write-Host "  SDK:     $SdkPath"
+Write-Host "  Signer:  $($apksigner.FullName)"
+Write-Host ""
+
 $identity=Join-Path $project 'personal.properties'
 $signing=Join-Path $project 'keystore/keystore.properties'
 $keyfile=Join-Path $project 'keystore/personal.jks'
@@ -80,7 +133,7 @@ try {
     if($LASTEXITCODE -ne 0){throw 'Build failed. See the messages above.'}
 } finally {Pop-Location}
 $apk=Join-Path $project 'app/build/outputs/apk/release/app-release.apk'
-& "$SdkPath/build-tools/35.0.0/apksigner.bat" verify --verbose --print-certs $apk
+& $apksigner.FullName verify --verbose --print-certs $apk
 if($LASTEXITCODE -ne 0){throw 'APK signature verification failed.'}
 Copy-Item -LiteralPath $apk -Destination "$out/MotoNav-personal.apk" -Force
 $env:MOTONAV_SIGN_PASSWORD=$null

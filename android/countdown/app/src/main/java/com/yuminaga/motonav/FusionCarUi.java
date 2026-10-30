@@ -97,6 +97,21 @@ public final class FusionCarUi implements Application.ActivityLifecycleCallbacks
             Log.i("MotoNavProviderUi","background service requested");
         } catch(RuntimeException e){Log.w("MotoNavProviderUi","background service unavailable",e);}
     }
+    public static void stopService(Context c){
+        if(c==null || !"com.autonavi.amapauto".equals(c.getPackageName()))return;
+        try {
+            Intent i=new Intent().setClassName(c.getPackageName(),
+                "com.autonavi.amapauto.background.AutoBackgroundService");
+            c.stopService(i);
+            Log.i("MotoNavProviderUi","background service stopped");
+        } catch(RuntimeException e){Log.w("MotoNavProviderUi","background service stop unavailable",e);}
+        try {
+            NotificationManager manager=(NotificationManager)c.getSystemService(Context.NOTIFICATION_SERVICE);
+            if(manager!=null){
+                manager.cancel(7317);
+            }
+        } catch(RuntimeException ignored){}
+    }
     public static void openConsole(Context c){
         openConsole(c,"com.yuminaga.motonav.MainActivity");
     }

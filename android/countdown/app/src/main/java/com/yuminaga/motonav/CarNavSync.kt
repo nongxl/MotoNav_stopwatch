@@ -182,7 +182,10 @@ object CarNavSync {
         val owned=requested
         startupTick?.let{handler.removeCallbacks(it)};startupTick=null;startup.stop()
         TrafficPositionMonitor.stop()
-        context?.let{FusionCarUi.finishWarm(it,warmToken)}
+        context?.let{
+            FusionCarUi.finishWarm(it,warmToken)
+            FusionCarUi.stopService(it)
+        }
         requested=false;guideAt=0;status="联动已停止"
         webRouteKey="";routeAnchors=emptyList();routeSource="sdk"
         if(owned)send(Intent().putExtra("KEY_TYPE",10010))

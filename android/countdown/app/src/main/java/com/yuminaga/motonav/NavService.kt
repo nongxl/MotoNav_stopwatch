@@ -112,6 +112,8 @@ class NavService : Service() {
         SingleEngineSession.disarm()
         WebMotorGuide.stop()
         RideRecorder.stop()
+        CarNavSync.stop()
+        FusionCarUi.stopService(this)
         AmapCaptureHost.serviceStopped(this)
         running = false
         CallWatcher.stop()                // v5.0
