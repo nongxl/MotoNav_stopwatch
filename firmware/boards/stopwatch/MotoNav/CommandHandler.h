@@ -280,6 +280,19 @@ void handleText(const String &m) {
       trafficLightLab.phases[1].valid(millis()), trafficLightLab.phases[2].valid(millis()), trafficLightLab.phases[3].valid(millis()));
     return;
   }
+  if (m.startsWith("#ZCOV,")) {
+    if (m.charAt(6) == '0') {
+      coverValid = false;
+      musicDirty = true;
+    }
+    return;
+  }
+  if (m.startsWith("#X,")) {
+    bool on = m.charAt(3) == '1';
+    setCrossActive(on);
+    navDirty = true;
+    return;
+  }
   if (m.startsWith("#n,")) { nightOn = m.substring(3).toInt() != 0; navDirty = true; return; }   // v3.0 夜间配色
   if (m == "#o") { ghostN = 0; navDirty = true; return; }   // v4.4 不显示原路线
   if (m == "#WXRESET") { wxHave = false; wxExtra = false; wxDetail = 0; wxDirty = true; return; }

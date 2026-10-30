@@ -83,7 +83,36 @@ struct Bulk {
   int id; uint32_t total; uint16_t parts; uint16_t got; bool done;
   uint8_t mask[512];        // 每片一位，最多 4096 片
 };
-Bulk bulks[5];              // 下标 1 = 地图块，2 = 路线，3 = 图片地图（v2.5），4 = 原路线（v4.4）
+#define COVER_MAX_BYTES (32 * 1024)
+#define COVER_SIZE 140
+#define COVER_BUF_BYTES (COVER_SIZE * COVER_SIZE * 2)
+
+uint16_t *coverBuf = nullptr;
+static uint16_t coverPalette[16];
+bool coverValid = false;
+#define CROSS_MAX_BYTES (128 * 1024)
+#define CROSS_MAX_W 256
+#define CROSS_MAX_H 160
+#define CROSS_BUF_BYTES (CROSS_MAX_W * CROSS_MAX_H * 2)
+
+static float effectiveMapPy = MAP_PY;
+static uint16_t *crossBuf = nullptr;
+static uint16_t crossPalette[16];
+static int crossW = 0, crossH = 0;
+static bool crossActive = false;
+static float crossProgress = 0.0f;
+static float crossStartProg = 0.0f;
+static float crossTargetProg = 0.0f;
+static unsigned long crossAnimAt = 0;
+
+void setCrossActive(bool on) {
+  if (crossActive == on) return;
+  crossActive = on;
+  crossStartProg = crossProgress;
+  crossTargetProg = on ? 1.0f : 0.0f;
+  crossAnimAt = millis();
+}
+Bulk bulks[7];              // 下标 1 = 地图块，2 = 路线，3 = 图片地图（v2.5），4 = 原路线（v4.4）
 
 // ---- v4.4 原路线（导入的高德分享路线）：导航时画成一条淡色细线，走错路时能看到原来该走哪 ----
 #define GHOST_PTS 6000
@@ -184,7 +213,11 @@ void mapInit() {
   ghostY = (int32_t *)ps_malloc(sizeof(int32_t) * GHOST_PTS);
   gbBox  = (int32_t *)ps_malloc(sizeof(int32_t) * 4 * (GHOST_PTS / RB_STEP + 2));
   rasterBuf = (uint8_t *)ps_malloc(RASTER_BUF_BYTES);
-  for (int t = 1; t <= 4; t++) { bulks[t].id = -1; bulks[t].done = false; }
+  bulks[5].cap = CROSS_MAX_BYTES; bulks[5].buf = (uint8_t *)ps_malloc(CROSS_MAX_BYTES);
+  if (!crossBuf) crossBuf = (uint16_t *)ps_malloc(CROSS_BUF_BYTES);
+  bulks[6].cap = COVER_MAX_BYTES; bulks[6].buf = (uint8_t *)ps_malloc(COVER_MAX_BYTES);
+  if (!coverBuf) coverBuf = (uint16_t *)ps_calloc(1, COVER_BUF_BYTES);
+  for (int t = 1; t <= 6; t++) { bulks[t].id = -1; bulks[t].done = false; }
   mapShow = (uint8_t *)ps_malloc(MAP_MAX);
   featOff = (uint32_t *)ps_malloc(sizeof(uint32_t) * FEAT_MAX);
   featNp  = (uint16_t *)ps_malloc(sizeof(uint16_t) * FEAT_MAX);
@@ -568,7 +601,7 @@ void rasterRows(int y0, int y1, int step) {
     float half = sqrtf(R * R - dyc * dyc);
     int xa = max(0, (int)(CX - half)), xb = min(LCD_WIDTH - 1, (int)(CX + half));
     if (RM.pix2) xa -= xa % PIXB;                       // 掌机像素：列也按 3 个一组对齐
-    float rx = (xa + 0.5f - CX) * inv, ry = (MAP_PY - (y + 0.5f)) * inv;
+    float rx = (xa + 0.5f - CX) * inv, ry = (effectiveMapPy - (y + 0.5f)) * inv;
     float dx = rx * cs + ry * sn, dy = -rx * sn + ry * cs;
     float u = (cx + dx - rasX0) / rasMpp, v = (rasY0 - (cy + dy)) / rasMpp;
     int32_t U = (int32_t)(u * 65536.0f), V = (int32_t)(v * 65536.0f);
@@ -683,7 +716,7 @@ void rasterViceRows(int y0, int y1, int step) {
     if (fabsf(dyc) >= 212) continue;
     float half = sqrtf(212.0f * 212.0f - dyc * dyc);
     int xa = max(0, (int)(CX - half)), xb = min(LCD_WIDTH - 1, (int)(CX + half));
-    float rx = (xa + 0.5f - CX) * inv, ry = (MAP_PY - (y + 0.5f)) * inv;
+    float rx = (xa + 0.5f - CX) * inv, ry = (effectiveMapPy - (y + 0.5f)) * inv;
     float dx = rx * RM.cs + ry * RM.sn, dy = -rx * RM.sn + ry * RM.cs;
     int32_t u = (int32_t)(((RM.cx + dx - rasX0) / rasMpp) * 65536.0f);
     int32_t v = (int32_t)(((rasY0 - (RM.cy + dy)) / rasMpp) * 65536.0f);
@@ -875,7 +908,7 @@ void drawRouteCurved(float a, float b, float cx, float cy, float sc, float cs, f
     float ua = fmaxf(a, (float)s), ub = fminf(b, (float)e);
     int m = 0, cls = -1;
     auto proj = [&](float x, float y) {
-      tmpX[m] = CX + sc * ((x - cx) * cs - (y - cy) * sn); tmpY[m] = MAP_PY - sc * ((x - cx) * sn + (y - cy) * cs); m++;
+      tmpX[m] = CX + sc * ((x - cx) * cs - (y - cy) * sn); tmpY[m] = effectiveMapPy - sc * ((x - cx) * sn + (y - cy) * cs); m++;
     };
     float x, y;
     routePt(ua, x, y); proj(x, y);
@@ -907,13 +940,13 @@ void drawRouteRange(float a, float b, float cx, float cy, float sc, float cs, fl
       int m = 0;
       float x, y;
       routePt(ua, x, y);
-      tmpX[m] = CX + sc * ((x - cx) * cs - (y - cy) * sn); tmpY[m] = MAP_PY - sc * ((x - cx) * sn + (y - cy) * cs); m++;
+      tmpX[m] = CX + sc * ((x - cx) * cs - (y - cy) * sn); tmpY[m] = effectiveMapPy - sc * ((x - cx) * sn + (y - cy) * cs); m++;
       for (int k = (int)floorf(ua) + 1; k < ub; k++) {
         float dx = routeX[k] - cx, dy = routeY[k] - cy;
-        tmpX[m] = CX + sc * (dx * cs - dy * sn); tmpY[m] = MAP_PY - sc * (dx * sn + dy * cs); m++;
+        tmpX[m] = CX + sc * (dx * cs - dy * sn); tmpY[m] = effectiveMapPy - sc * (dx * sn + dy * cs); m++;
       }
       routePt(ub, x, y);
-      tmpX[m] = CX + sc * ((x - cx) * cs - (y - cy) * sn); tmpY[m] = MAP_PY - sc * ((x - cx) * sn + (y - cy) * cs); m++;
+      tmpX[m] = CX + sc * ((x - cx) * cs - (y - cy) * sn); tmpY[m] = effectiveMapPy - sc * ((x - cx) * sn + (y - cy) * cs); m++;
       if (m >= 2) mapPolyline(tmpX, tmpY, m, pass == 0 ? w0 : w1, pass == 0 ? c0 : c1, true);
     }
   }
@@ -954,19 +987,185 @@ void drawGhost(float cx, float cy, float sc, float cs, float sn, float viewR, fl
     int s = bi * RB_STEP, e = min(ghostN - 1, s + RB_STEP), m = 0;
     for (int k = s; k <= e; k++) {
       float dx = ghostX[k] - cx, dy = ghostY[k] - cy;
-      tmpX[m] = CX + sc * (dx * cs - dy * sn); tmpY[m] = MAP_PY - sc * (dx * sn + dy * cs); m++;
+      tmpX[m] = CX + sc * (dx * cs - dy * sn); tmpY[m] = effectiveMapPy - sc * (dx * sn + dy * cs); m++;
     }
     if (m >= 2) mapPolyline(tmpX, tmpY, m, w, styleIdx()==ST_MINIMAL ? 0x8410 : 0xFD20, true);
   }
 }
 
 // 'M' 类型 编号 总片数(2) 片序号(2) 总字节(4) 偏移(4) + 数据
+
+bool parseCross(const uint8_t *d, uint32_t total) {
+  if (!d || total < 42) return false;
+  int w = d[0] | (d[1] << 8);
+  int h = d[2] | (d[3] << 8);
+  if (w <= 0 || w > CROSS_MAX_W || h <= 0 || h > CROSS_MAX_H) return false;
+
+  for (int i = 0; i < 16; i++) {
+    crossPalette[i] = d[6 + i * 2] | (d[7 + i * 2] << 8);
+  }
+
+  size_t packed = total - 42;
+  size_t rleMax = (size_t)w * h * 2;
+  uint8_t *rleBuf = (uint8_t *)ps_malloc(rleMax);
+  if (!rleBuf) return false;
+
+  if (!viceInflater) viceInflater = (tinfl_decompressor *)malloc(sizeof(tinfl_decompressor));
+  if (!viceInflater) { free(rleBuf); return false; }
+  tinfl_init(viceInflater);
+  size_t inBytes = packed, outBytes = rleMax;
+  tinfl_status res = tinfl_decompress(viceInflater, d + 42, &inBytes,
+      rleBuf, rleBuf, &outBytes,
+      TINFL_FLAG_PARSE_ZLIB_HEADER | TINFL_FLAG_USING_NON_WRAPPING_OUTPUT_BUF);
+  if (res != TINFL_STATUS_DONE) {
+    free(rleBuf);
+    return false;
+  }
+
+  if (!crossBuf) crossBuf = (uint16_t *)ps_malloc(CROSS_BUF_BYTES);
+  if (!crossBuf) { free(rleBuf); return false; }
+
+  int totalPix = w * h;
+  int outIdx = 0;
+  size_t p = 0;
+  while (p < outBytes && outIdx < totalPix) {
+    uint8_t tag = rleBuf[p++];
+    if (tag < 16) {
+      crossBuf[outIdx++] = crossPalette[tag];
+    } else {
+      int cIdx = tag & 0x0F;
+      int len = ((tag >> 4) & 0x0F) + 1;
+      if (len == 16 && p < outBytes) {
+        len += rleBuf[p++];
+      }
+      uint16_t c = crossPalette[cIdx];
+      for (int k = 0; k < len && outIdx < totalPix; k++) {
+        crossBuf[outIdx++] = c;
+      }
+    }
+  }
+
+  free(rleBuf);
+  if (outIdx >= totalPix) {
+    crossW = w;
+    crossH = h;
+    setCrossActive(true);
+    return true;
+  }
+  return false;
+}
+
+void drawJunctionCrossCard(float prog) {
+  if (prog <= 0.01f || !crossBuf || crossW <= 0 || crossH <= 0) return;
+  int cardW = 380;
+  int cardH = 210;
+  int cardX = (LCD_WIDTH - cardW) / 2;
+  int cardY = (int)(-cardH + prog * (cardH + 12));
+
+  // 绘制圆角卡片底板与边框
+  gfx->fillRoundRect(cardX, cardY, cardW, cardH, 16, 0x10A2);
+  gfx->drawRoundRect(cardX, cardY, cardW, cardH, 16, 0x4A69);
+  gfx->drawRoundRect(cardX - 1, cardY - 1, cardW + 2, cardH + 2, 17, 0x2124);
+
+  // 居中绘制路口放大图
+  int imgX = cardX + (cardW - crossW) / 2;
+  int imgY = cardY + (cardH - crossH) / 2 + 10;
+  for (int r = 0; r < crossH; r++) {
+    int py = imgY + r;
+    if (py < 0 || py >= LCD_HEIGHT) continue;
+    gfx->draw16bitRGBBitmap(imgX, py, crossBuf + r * crossW, crossW, 1);
+  }
+
+  // 顶部实景标签
+  int tagY = cardY + 8;
+  if (tagY >= 0 && tagY + 18 < LCD_HEIGHT) {
+    gfx->fillRoundRect(cardX + 14, tagY, 74, 18, 4, 0x2145);
+    gfx->setTextColor(0xFFFF);
+    gfx->setTextSize(1);
+    gfx->setCursor(cardX + 18, tagY + 5);
+    gfx->print("JUNCTION");
+  }
+}
+
+
+static tinfl_decompressor *coverInflater = nullptr;
+
+bool parseCover(const uint8_t *d, uint32_t total) {
+  if (!d || total < 42) return false;
+  int w = d[0] | (d[1] << 8);
+  int h = d[2] | (d[3] << 8);
+  if (w <= 0 || w > COVER_SIZE || h <= 0 || h > COVER_SIZE) return false;
+
+  for (int i = 0; i < 16; i++) {
+    coverPalette[i] = d[6 + i * 2] | (d[7 + i * 2] << 8);
+  }
+
+  uint32_t rawRleLen = (uint32_t)d[38] | ((uint32_t)d[39] << 8) | ((uint32_t)d[40] << 16) | ((uint32_t)d[41] << 24);
+  if (rawRleLen == 0 || rawRleLen > (uint32_t)w * h * 2) return false;
+
+  size_t packed = total - 42;
+  uint8_t *rleBuf = (uint8_t *)ps_malloc(rawRleLen);
+  if (!rleBuf) return false;
+
+  if (!coverInflater) coverInflater = (tinfl_decompressor *)malloc(sizeof(tinfl_decompressor));
+  if (!coverInflater) { free(rleBuf); return false; }
+  tinfl_init(coverInflater);
+
+  size_t inBytes = packed, outBytes = rawRleLen;
+  tinfl_status res = tinfl_decompress(coverInflater, d + 42, &inBytes,
+      rleBuf, rleBuf, &outBytes,
+      TINFL_FLAG_PARSE_ZLIB_HEADER | TINFL_FLAG_USING_NON_WRAPPING_OUTPUT_BUF);
+  if (res != TINFL_STATUS_DONE && outBytes != rawRleLen) {
+    tinfl_init(coverInflater);
+    inBytes = packed; outBytes = rawRleLen;
+    res = tinfl_decompress(coverInflater, d + 42, &inBytes,
+        rleBuf, rleBuf, &outBytes,
+        TINFL_FLAG_USING_NON_WRAPPING_OUTPUT_BUF);
+  }
+
+  if (outBytes != rawRleLen) {
+    free(rleBuf);
+    return false;
+  }
+
+  if (!coverBuf) coverBuf = (uint16_t *)ps_calloc(1, COVER_BUF_BYTES);
+  if (!coverBuf) { free(rleBuf); return false; }
+
+  int totalPix = w * h;
+  int outIdx = 0;
+  size_t p = 0;
+  while (p < outBytes && outIdx < totalPix) {
+    uint8_t tag = rleBuf[p++];
+    if (tag < 16) {
+      coverBuf[outIdx++] = coverPalette[tag];
+    } else {
+      int cIdx = tag & 0x0F;
+      int len = ((tag >> 4) & 0x0F) + 1;
+      if (len == 16 && p < outBytes) {
+        len += rleBuf[p++];
+      }
+      uint16_t c = coverPalette[cIdx];
+      for (int k = 0; k < len && outIdx < totalPix; k++) {
+        coverBuf[outIdx++] = c;
+      }
+    }
+  }
+
+  free(rleBuf);
+  if (outIdx >= totalPix) {
+    coverValid = true;
+    musicDirty = true;
+    return true;
+  }
+  return false;
+}
+
 void handleBulk(const uint8_t *d, int n) {
   if (n < 15) return;
   int type = d[1], id = d[2];
   int parts = d[3] | (d[4] << 8), seq = d[5] | (d[6] << 8);
   uint32_t total = (uint32_t)rd32(d + 7), off = (uint32_t)rd32(d + 11);
-  if (type < 1 || type > 4) return;
+  if (type < 1 || type > 6) return;
   Bulk &b = bulks[type];
   if (!b.buf || total == 0 || total > b.cap || parts == 0 || parts > 4096 || seq >= parts) return;
   if (id != b.id || total != b.total || parts != b.parts) {     // 新的一份：从头开始收
@@ -991,6 +1190,10 @@ void handleBulk(const uint8_t *d, int n) {
       parseRoute(b.buf, total);
     } else if (type == 4) {
       parseGhost(b.buf, total);                        // v4.4 原路线
+    } else if (type == 5) {
+      parseCross(b.buf, total);
+    } else if (type == 6) {
+      parseCover(b.buf, total);
     } else {
       if (!parseRaster(b.buf,total)) {
         // 没有成功解码就不回“已确认”，通知手机回退全量重发。
@@ -1450,8 +1653,8 @@ void drawMapCams(float cx, float cy, float sc, float cs, float sn) {
   if (mapCamN == 0 || mapCamFrame != posFrame) return;
   for (int i = 0; i < mapCamN; i++) {
     float dx = mapCamX[i] - cx, dy = mapCamY[i] - cy;
-    float px = CX + sc * (dx * cs - dy * sn), py = MAP_PY - sc * (dx * sn + dy * cs);
-    if (py > MAP_PY + 12) continue;                                     // 在车后面：已经过了
+    float px = CX + sc * (dx * cs - dy * sn), py = effectiveMapPy - sc * (dx * sn + dy * cs);
+    if (py > effectiveMapPy + 12) continue;                                     // 在车后面：已经过了
     float ex = px - CX, ex2 = py - CX;
     if (ex * ex + ex2 * ex2 > 194.0f * 194.0f) continue;
     camPx[i] = px; camPy[i] = py; camShown[i] = true;
@@ -1597,8 +1800,8 @@ void drawCamIcons(float cx, float cy, float sc, float cs, float sn) {
   for (int a = 0; a < n; a++)                                            // 锁住的在前，再按离车头的距离
     for (int b = a + 1; b < n; b++) {
       int qa = order[a], qb = order[b];
-      float da = fabsf(mkX[qa] - CX) + fabsf(mkY[qa] - MAP_PY) + (keep[qa] ? 0 : 10000);
-      float db = fabsf(mkX[qb] - CX) + fabsf(mkY[qb] - MAP_PY) + (keep[qb] ? 0 : 10000);
+      float da = fabsf(mkX[qa] - CX) + fabsf(mkY[qa] - effectiveMapPy) + (keep[qa] ? 0 : 10000);
+      float db = fabsf(mkX[qb] - CX) + fabsf(mkY[qb] - effectiveMapPy) + (keep[qb] ? 0 : 10000);
       if (db < da) { order[a] = qb; order[b] = qa; }
     }
   const float GAP = 2 * R + 3;                                           // 一列里相邻两个图标的间距
@@ -1631,7 +1834,7 @@ void drawCamIcons(float cx, float cy, float sc, float cs, float sn) {
             float dd2 = ddx * ddx + ddy * ddy;
             if (dd2 < need * need) score += (long)((need - sqrtf(dd2)) * 60) + 1;
           }
-          float sx = x - CX, sy = MAP_PY - y, rux, ruy;
+          float sx = x - CX, sy = effectiveMapPy - y, rux, ruy;
           float wx = cx + (sx * cs + sy * sn) / sc, wy = cy + (-sx * sn + sy * cs) / sc;
           if (routeDistW(wx, wy, (R + 4) / sc, rux, ruy) < (R + 4) / sc) score += 600;   // 别压在路线上
         }
@@ -1666,7 +1869,7 @@ void drawMapLights(float cx, float cy, float sc, float cs, float sn) {
   for (int i = 0; i < lightN; i++) {
     if (routeProg >= 0 && lightU[i] <= routeProg + 0.02f) continue;     // 已经过了
     float dx = lightX[i] - cx, dy = lightY[i] - cy;
-    float px = CX + sc * (dx * cs - dy * sn), py = MAP_PY - sc * (dx * sn + dy * cs);
+    float px = CX + sc * (dx * cs - dy * sn), py = effectiveMapPy - sc * (dx * sn + dy * cs);
     bool isNext = first;
     first = false;
     float ex = px - CX, ey = py - CX;
@@ -1794,7 +1997,7 @@ void drawDestBlip(float cx, float cy, float sc, float cs, float sn) {
   if (routeN < 2 || routeFrame != posFrame) return;
   float dx = routeX[routeN - 1] - cx, dy = routeY[routeN - 1] - cy;
   float sx = sc * (dx * cs - dy * sn), sy = -sc * (dx * sn + dy * cs);   // 相对车头位置
-  float px = CX + sx, py = MAP_PY + sy;
+  float px = CX + sx, py = effectiveMapPy + sy;
   float ex = px - CX, ey = py - CX, er = sqrtf(ex * ex + ey * ey);
   const float RMAX = styleIdx() == ST_DRAGON ? 183 : 192;
   bool outside = er > RMAX;
@@ -1865,7 +2068,7 @@ void drawNavHints(int bannerY) {
 
 // v3.8 顶部车速/测速牌/车道、底部箭头和行程信息、车头箭头占的地方（这些后画，电子眼图标要提前让开）
 void addHudObstacles() {
-  obsAdd(CX - 15, MAP_PY - 18, CX + 15, MAP_PY + 16);                 // 车头箭头
+  obsAdd(CX - 15, (int)(effectiveMapPy - 18), CX + 15, (int)(effectiveMapPy + 16));                 // 车头箭头
   if (speedKmh >= 0) {
     int sx = hasCam ? CX - 40 : CX;
     obsAdd(sx - 60, 36, sx + 60, 92);                                   // 车速数字 + km/h
@@ -2078,7 +2281,7 @@ void drawVignette(float r0, float r1, int maxDark) {
 // ================= v6.1 风格特效 =================
 static inline void projXY(float x, float y, float cx, float cy, float sc, float cs, float sn, float &px, float &py) {
   px = CX + sc * ((x - cx) * cs - (y - cy) * sn);
-  py = MAP_PY - sc * ((x - cx) * sn + (y - cy) * cs);
+  py = effectiveMapPy - sc * ((x - cx) * sn + (y - cy) * cs);
 }
 
 // 蓝图：跟着地图走的网格，每 50 米一条线
@@ -2100,13 +2303,13 @@ void drawBlueprintGrid(float cx, float cy, float sc, float cs, float sn, float v
 
 // 雷达：三圈距离环 + 绕着车转的扫描线（后面拖一串渐暗的线）
 void drawRadarSweep() {
-  for (int r = 70; r <= 210; r += 70) gfx->drawCircle(CX, MAP_PY, r, 0x0A44);
+  for (int r = 70; r <= 210; r += 70) gfx->drawCircle(CX, (int)effectiveMapPy, r, 0x0A44);
   float a0 = (millis() % 3200) / 3200.0f * 2 * PI;
   const int TRAIL = 26;
   for (int k = TRAIL - 1; k >= 0; k--) {
     float a = a0 - k * 0.022f;
     uint16_t c = blendF(0x00C1, 0x8FF4, (uint32_t)((TRAIL - k) * 256 / TRAIL));
-    gfx->drawLine(CX, MAP_PY, (int)(CX + sinf(a) * 300), (int)(MAP_PY - cosf(a) * 300), c);
+    gfx->drawLine(CX, (int)effectiveMapPy, (int)(CX + sinf(a) * 300), (int)(effectiveMapPy - cosf(a) * 300), c);
   }
 }
 
@@ -2207,6 +2410,20 @@ void drawMapFrame() {
   unsigned long t = millis();
   lastMapDraw = t;
   frameIsMap = true;
+
+  if (crossProgress != crossTargetProg) {
+    float dt = (t - crossAnimAt) / 320.0f;
+    if (dt >= 1.0f) {
+      crossProgress = crossTargetProg;
+    } else {
+      float ease = crossTargetProg > crossStartProg
+          ? sinf(dt * 1.5707963f)
+          : (1.0f - cosf(dt * 1.5707963f));
+      crossProgress = crossStartProg + (crossTargetProg - crossStartProg) * ease;
+    }
+    navDirty = true;
+  }
+  effectiveMapPy = MAP_PY + crossProgress * (LCD_HEIGHT / 3.0f);
   // 位置：按车速和转弯速度往前推算（v6.7 沿弧线，再加一点提前量），让画面连续移动、少“慢半拍”
   float cx, cy, hPred;
   predictPose(t, leadMs / 1000.0f, cx, cy, hPred);
@@ -2240,7 +2457,7 @@ void drawMapFrame() {
   float targetS = constrain(0.85f - posKmh * 0.006f, 0.38f, useRaster ? 0.6f : 0.85f);
   viewScale += (targetS - viewScale) * (1.0f - expf(-vdt / 1.2f));   // v3.7 缩放也按时间平滑
   float sc = viewScale, hs = viewHdg * PI / 180, cs = cosf(hs), sn = sinf(hs);
-  float viewR = (CX + (MAP_PY - CX) + 30) / sc;
+  float viewR = (CX + (effectiveMapPy - CX) + 30) / sc;
 
   float wk = sc / 0.6f;
   profT = micros();
@@ -2259,7 +2476,7 @@ void drawMapFrame() {
     for (int k = 0; k < np; k++) {
       float dx = rd16(pp + 4 * k) - lx, dy = rd16(pp + 4 * k + 2) - ly;
       tmpX[k] = CX + sc * (dx * cs - dy * sn);
-      tmpY[k] = MAP_PY - sc * (dx * sn + dy * cs);
+      tmpY[k] = effectiveMapPy - sc * (dx * sn + dy * cs);
     }
     uint8_t cls = featCls[i];
     if (cls & 0x80) {
@@ -2300,7 +2517,7 @@ void drawMapFrame() {
   if (!dragon && !cleanOn && !cruiseOn) drawMapLights(cx, cy, sc, cs, sn);   // v3.2 路线上的红绿灯（v4.9 清爽模式不画；v7.6 巡航不画）
   if (!dragon) drawMapCams(cx, cy, sc, cs, sn);                      // v3.5 电子眼
   if (!cruiseOn) drawDestBlip(cx, cy, sc, cs, sn);      // v2.9 目的地标记（v7.6 巡航没有目的地）
-  drawPlayer(CX, MAP_PY);
+  drawPlayer(CX, effectiveMapPy);
   profMark(3);
   {
     int st = styleIdx();                                // v6.1 纸地图、蓝图、掌机像素不压暗边缘
@@ -2337,6 +2554,7 @@ void drawMapFrame() {
   drawBattery(CX - 28, 14, true);                         // 电量（车速上方居中，内嵌电量数字带黑底）
   drawTrafficLightLab(millis());                        // 红绿灯竖排卡片
   profMark(10);
+  drawJunctionCrossCard(crossProgress);
   // v2.9 小地图里不画顶部的蓝牙小圆点（会和 N 标记重叠；能收到地图就说明连着）
   needFlush = true;
   mapFrames++;

@@ -1,6 +1,7 @@
 package com.yuminaga.motonav
 
 import android.content.Context
+import android.graphics.Bitmap
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
@@ -68,6 +69,8 @@ object NaviBridge {
     @Volatile var uiCamDist = 0
     @Volatile var uiLanes: IntArray = IntArray(0)   // 每条车道两个数：背景码、推荐码（255 = 不推荐）
     @Volatile var uiArrived = false
+    @Volatile var uiCrossBitmap: Bitmap? = null
+    var onCrossUpdate: ((Bitmap?) -> Unit)? = null
     // v7.9 到达特效用的行程统计：从开始导航算起骑了多远、多久、最快多少
     private var tripStartAt = 0L
     private var tripMeters = 0.0
@@ -380,6 +383,7 @@ object NaviBridge {
         uiDir = ""; uiAngle = null; uiDist = -1; uiNextRoad = ""; uiCurRoad = ""
         uiRemainM = 0; uiRemainS = 0; uiLights = 0; uiCamLimit = 0; uiCamDist = 0
         uiLanes = IntArray(0); uiArrived = false; uiHasInfo = false
+        onCrossHide()
         lastTripMsg = ""; lastLightMsg = ""; lightBase = -1; lightAt = 0L; uiLightDist = -1
         rerouting = false; gpsWeakSent = false; lastTrafficMsg = ""; lastTrafficAt = 0L    // v4.9
         suggestNewId = null; uiSuggestMin = 0
@@ -841,6 +845,26 @@ object NaviBridge {
         }
     }
 
+
+    private fun onCross(args: Array<out Any?>?) {
+        val obj = args?.getOrNull(0) ?: return
+        val bmp = (Refl.call(obj, "getBitmap").second as? Bitmap)
+            ?: (fieldOf(obj, "bitmap") as? Bitmap)
+            ?: (fieldOf(obj, "mBitmap") as? Bitmap)
+        if (bmp != null) {
+            uiCrossBitmap = bmp
+            handler.post { onCrossUpdate?.invoke(bmp) }
+            CrossFeeder.sendCross(bmp)
+        }
+    }
+
+    private fun onCrossHide() {
+        if (uiCrossBitmap != null) {
+            uiCrossBitmap = null
+            handler.post { onCrossUpdate?.invoke(null) }
+            CrossFeeder.hideCross()
+        }
+    }
     private fun onLaneHide() {
         uiLanes = IntArray(0)                                                    // v3.0
         handler.post {
@@ -873,6 +897,10 @@ object NaviBridge {
                     "updateCameraInfo" -> onCameras(args?.getOrNull(0) as? Array<*>)
                     "showLaneInfo" -> onLaneInfo(args)
                     "hideLaneInfo" -> onLaneHide()
+                    "showCross" -> onCross(args)
+                    "hideCross" -> onCrossHide()
+                    "showModeCross" -> onCross(args)
+                    "hideModeCross" -> onCrossHide()
                     "onArriveDestination" -> finish("A,0", "已到达目的地",epoch)
                     "onEndEmulatorNavi" -> if (arrivalSession.isSimulation(epoch)) finish("A,0", "模拟导航结束",epoch)
                     // v7.9 到达自己加的途经点：圆屏放 3 秒短特效

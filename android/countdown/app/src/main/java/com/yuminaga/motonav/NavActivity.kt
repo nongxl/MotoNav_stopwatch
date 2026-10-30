@@ -22,6 +22,7 @@ import android.view.View
 import android.view.WindowInsets
 import android.view.WindowInsetsController
 import android.widget.FrameLayout
+import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.TextView
 import android.widget.Toast
@@ -81,6 +82,9 @@ class NavActivity : ComponentActivity() {
     private lateinit var overviewBtn: TextView
     private lateinit var muteBtn: TextView
     private lateinit var arrivedCard: LinearLayout
+    private lateinit var crossCard: FrameLayout
+    private lateinit var crossImg: ImageView
+    private var crossShowing = false
     private lateinit var settingsBtn: TextView
     private var providerBtn:TextView?=null
 
@@ -164,6 +168,10 @@ class NavActivity : ComponentActivity() {
         }
         buildBottomBar()
         buildArrived()
+        buildCrossCard()
+        NaviBridge.onCrossUpdate = { bmp: Bitmap? ->
+            if (bmp != null) showCrossCard(bmp) else hideCrossCard()
+        }
         setContentView(root)
         // ComponentActivity does not eagerly install a DecorView. Access the
         // window insets controller only after this view is attached.
@@ -238,6 +246,89 @@ class NavActivity : ComponentActivity() {
         android.util.Log.i("MotoNavLifecycle","resume-page epoch=$navigationEpoch")
     }
 
+
+    private fun buildCrossCard() {
+        val screenH = resources.displayMetrics.heightPixels
+        val cardH = (screenH * 0.46f).toInt()
+        crossCard = FrameLayout(this).apply {
+            visibility = View.GONE
+            translationY = -cardH.toFloat()
+            background = GradientDrawable().apply {
+                setColor(Color.parseColor("#EE1A1A1E"))
+                cornerRadius = dp(16).toFloat()
+                setStroke(dp(1), Color.parseColor("#33FFFFFF"))
+            }
+            elevation = dp(16).toFloat()
+            clipToOutline = true
+        }
+
+        crossImg = ImageView(this).apply {
+            scaleType = ImageView.ScaleType.FIT_CENTER
+        }
+        crossCard.addView(crossImg, FrameLayout.LayoutParams(-1, -1))
+
+        val tagView = TextView(this).apply {
+            text = "路口实景"
+            textSize = 11f
+            typeface = S.BOLD
+            setTextColor(Color.WHITE)
+            background = GradientDrawable().apply {
+                setColor(Color.parseColor("#CC000000"))
+                cornerRadius = dp(6).toFloat()
+            }
+            setPadding(dp(8), dp(3), dp(8), dp(3))
+        }
+        crossCard.addView(tagView, FrameLayout.LayoutParams(-2, -2).apply {
+            topMargin = dp(10); leftMargin = dp(12)
+        })
+
+        val closeBtn = TextView(this).apply {
+            text = "✕"
+            textSize = 14f
+            gravity = Gravity.CENTER
+            setTextColor(Color.parseColor("#AAAAAA"))
+            background = GradientDrawable().apply {
+                setColor(Color.parseColor("#66000000"))
+                cornerRadius = dp(12).toFloat()
+            }
+            setOnClickListener { hideCrossCard() }
+        }
+        crossCard.addView(closeBtn, FrameLayout.LayoutParams(dp(26), dp(26)).apply {
+            topMargin = dp(10); rightMargin = dp(12); gravity = Gravity.TOP or Gravity.END
+        })
+
+        root.addView(crossCard, FrameLayout.LayoutParams(-1, cardH, Gravity.TOP).apply {
+            leftMargin = dp(8); rightMargin = dp(8); topMargin = dp(8)
+        })
+    }
+
+    private fun showCrossCard(bmp: Bitmap) {
+        crossImg.setImageBitmap(bmp)
+        if (!crossShowing) {
+            crossShowing = true
+            crossCard.visibility = View.VISIBLE
+            crossCard.animate().cancel()
+            crossCard.animate()
+                .translationY(0f)
+                .setDuration(350)
+                .setInterpolator(android.view.animation.DecelerateInterpolator())
+                .start()
+        }
+    }
+
+    private fun hideCrossCard() {
+        if (!crossShowing && crossCard.visibility == View.GONE) return
+        crossShowing = false
+        crossCard.animate().cancel()
+        val h = crossCard.height.takeIf { it > 0 } ?: (resources.displayMetrics.heightPixels * 0.46f).toInt()
+        crossCard.animate()
+            .translationY(-h.toFloat() - dp(16))
+            .setDuration(280)
+            .setInterpolator(android.view.animation.AccelerateInterpolator())
+            .withEndAction { crossCard.visibility = View.GONE }
+            .start()
+    }
+
     private fun makeOptions(): AMapNaviViewOptions {
         val o = AMapNaviViewOptions()
         o.setLayoutVisible(false)              // 不要高德自带的按钮和面板，界面我们自己画
@@ -249,8 +340,8 @@ class NavActivity : ComponentActivity() {
         Refl.call(o, "setAutoChangeZoom", true)
         Refl.call(o, "setPointToCenter", 0.5, 0.64)     // 车的位置偏下，前方的路多看一点
         Refl.call(o, "setLaneInfoShow", false)
-        Refl.call(o, "setModeCrossDisplayShow", false)
-        Refl.call(o, "setRealCrossDisplay", false)
+        Refl.call(o, "setModeCrossDisplayShow", true)
+        Refl.call(o, "setRealCrossDisplay", true)
         Refl.call(o, "setTrafficBarEnabled", false)
         Refl.call(o, "setCompassEnabled", false)
         Refl.call(o, "setSettingMenuEnabled", false)
@@ -677,6 +768,7 @@ class NavActivity : ComponentActivity() {
         super.onSaveInstanceState(outState);if(::naviView.isInitialized)naviView.onSaveInstanceState(outState)
     }
     override fun onDestroy() {
+        NaviBridge.onCrossUpdate = null
         handler.removeCallbacksAndMessages(null)
         try { bicyclePolyline?.remove(); bicyclePolyline = null } catch (_: Throwable) {}
         if (!redirectedToSingle && isFinishing && !exited) { exited = true; NaviBridge.exitNavi(navigationEpoch) }

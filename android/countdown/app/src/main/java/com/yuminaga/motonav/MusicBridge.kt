@@ -63,15 +63,40 @@ object MusicBridge {
         // 部分播放器漏报 actions；允许发标准媒体按键，不按这些位禁用按钮。
         val mask = if (mc != null) 7 else 0
         val status = "#Z,${if (mc != null) 1 else 0},${if (playing) 1 else 0},$mask"
+        if (mc == null) {
+            CoverFeeder.clearCover()
+        }
         if (force || lastText != "$title\n$artist") {
             lastText = "$title\n$artist"
             for ((slot, text) in listOf(5 to title, 6 to artist)) {
                 val image = TextImage.render(text.take(200), 360, if (slot == 5) 32f else 24f)
                 BleLink.sendImage(slot, image?.w ?: 0, image?.h ?: 0, image?.data ?: byteArrayOf())
             }
+            if (mc != null) {
+                val bmp = extractCover(meta, c)
+                CoverFeeder.feedCover(bmp, track(mc))
+            }
         }
         if (force || lastState != status) { lastState = status; BleLink.send(status) }
     }
+
+    private fun extractCover(meta: MediaMetadata?, context: Context): android.graphics.Bitmap? {
+        if (meta == null) return null
+        try {
+            meta.getBitmap(MediaMetadata.METADATA_KEY_ALBUM_ART)?.let { return it }
+            meta.getBitmap(MediaMetadata.METADATA_KEY_ART)?.let { return it }
+            val uriStr = meta.getString(MediaMetadata.METADATA_KEY_ALBUM_ART_URI)
+                ?: meta.getString(MediaMetadata.METADATA_KEY_ART_URI)
+            if (!uriStr.isNullOrBlank()) {
+                val uri = android.net.Uri.parse(uriStr)
+                context.contentResolver.openInputStream(uri)?.use { stream ->
+                    return android.graphics.BitmapFactory.decodeStream(stream)
+                }
+            }
+        } catch (_: Throwable) {}
+        return null
+    }
+
     private fun track(mc: MediaController): String {
         val m = mc.metadata
         return listOf(MediaMetadata.METADATA_KEY_MEDIA_ID, MediaMetadata.METADATA_KEY_TITLE,
