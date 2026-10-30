@@ -65,8 +65,16 @@ void handleText(const String &m) {
   }
   if (m.startsWith("#Z,")) {
     int have = 0, play = 0, actions = 0;
-    if (sscanf(m.c_str(), "#Z,%d,%d,%d", &have, &play, &actions) == 3) {
-      if (!hidMusicMode) { musicHave = have != 0; musicPlaying = play != 0; musicActions = actions & 7; } musicDirty = true;
+    int dur = 0, pos = 0;
+    int count = sscanf(m.c_str(), "#Z,%d,%d,%d,%d,%d", &have, &play, &actions, &dur, &pos);
+    if (count >= 3) {
+      if (!hidMusicMode) { musicHave = have != 0; musicPlaying = play != 0; musicActions = actions & 7; }
+      if (count >= 5) {
+        musicDuration = (uint32_t)max(0, dur);
+        musicPos = (uint32_t)max(0, pos);
+        musicPosAt = millis();
+      }
+      musicDirty = true;
     }
     return;
   }

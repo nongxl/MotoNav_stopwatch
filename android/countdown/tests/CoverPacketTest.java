@@ -4,7 +4,7 @@ import java.util.zip.Inflater;
 
 public final class CoverPacketTest {
     public static void main(String[] args) throws Exception {
-        int w = 140, h = 140;
+        int w = 180, h = 180;
         int[] pixels = new int[w * h];
         for (int y = 0; y < h; y++) {
             for (int x = 0; x < w; x++) {

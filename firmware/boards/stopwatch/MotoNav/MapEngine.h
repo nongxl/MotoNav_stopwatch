@@ -83,8 +83,8 @@ struct Bulk {
   int id; uint32_t total; uint16_t parts; uint16_t got; bool done;
   uint8_t mask[512];        // 每片一位，最多 4096 片
 };
-#define COVER_MAX_BYTES (32 * 1024)
-#define COVER_SIZE 140
+#define COVER_MAX_BYTES (48 * 1024)
+#define COVER_SIZE 180
 #define COVER_BUF_BYTES (COVER_SIZE * COVER_SIZE * 2)
 
 uint16_t *coverBuf = nullptr;
@@ -1193,7 +1193,9 @@ void handleBulk(const uint8_t *d, int n) {
     } else if (type == 5) {
       parseCross(b.buf, total);
     } else if (type == 6) {
-      parseCover(b.buf, total);
+      if (parseCover(b.buf, total)) {
+        musicDirty = true;
+      }
     } else {
       if (!parseRaster(b.buf,total)) {
         // 没有成功解码就不回“已确认”，通知手机回退全量重发。

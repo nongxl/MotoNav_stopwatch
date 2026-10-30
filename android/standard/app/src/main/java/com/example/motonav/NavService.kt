@@ -24,6 +24,18 @@ class NavService : Service() {
         private const val CHANNEL_ID = "motonav_running"
         private const val NOTIFY_ID = 1
         @Volatile var running = false
+        @Volatile private var instance: NavService? = null
+
+        fun updateWakeLock() {
+            val s = instance ?: return
+            val shouldHold = NavigationUi.active()
+            val wl = s.wakeLock ?: return
+            if (shouldHold && !wl.isHeld) {
+                try { wl.acquire(6 * 60 * 60 * 1000L) } catch (_: Exception) {}
+            } else if (!shouldHold && wl.isHeld) {
+                try { wl.release() } catch (_: Exception) {}
+            }
+        }
 
         fun start(context: Context) {
             val i = Intent(context, NavService::class.java)
@@ -36,6 +48,18 @@ class NavService : Service() {
     }
 
     private var wakeLock: PowerManager.WakeLock? = null
+    private var bgLocationClient: com.amap.api.location.AMapLocationClient? = null
+
+    private fun bindAmapBackgroundLocation(notif: Notification) {
+        try {
+            val client = com.amap.api.location.AMapLocationClient(applicationContext)
+            client.enableBackgroundLocation(NOTIFY_ID, notif)
+            bgLocationClient = client
+            android.util.Log.i("NavService", "AMap background location enabled")
+        } catch (t: Throwable) {
+            android.util.Log.w("NavService", "enableBackgroundLocation failed: ${t.message}")
+        }
+    }
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -44,14 +68,16 @@ class NavService : Service() {
         CrashLog.install(this)            // v5.5 闪退记录
         createChannel()
         try {
+            val notif = buildNotification()
             if (Build.VERSION.SDK_INT >= 29) {
                 startForeground(
-                    NOTIFY_ID, buildNotification(),
+                    NOTIFY_ID, notif,
                     ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION or ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE
                 )
             } else {
-                startForeground(NOTIFY_ID, buildNotification())
+                startForeground(NOTIFY_ID, notif)
             }
+            bindAmapBackgroundLocation(notif)
         } catch (e: Exception) {
             // 权限还没给全时会走到这里：先停掉，授权后再启动
             BleLink.status = "后台服务启动失败，请先点「1. 授予权限」：${e.message}"
@@ -60,12 +86,13 @@ class NavService : Service() {
         }
         running = true
 
-        // 保持 CPU 运行（屏幕可以关），否则锁屏后蓝牙发送和距离推算会变慢
+        // 优化功耗：按需延迟申请 WakeLock，避免服务一旦启动永久唤醒 CPU 导致待机耗电
+        instance = this
         val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
         wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "MotoNav:nav").apply {
             setReferenceCounted(false)
-            acquire()
         }
+        updateWakeLock()
 
         BleLink.startAuto(this)
         Brightness.start(this)
@@ -87,8 +114,13 @@ class NavService : Service() {
         CallWatcher.stop()                // v5.0
         Brightness.stop()
         BleLink.stopAuto()
+        try {
+            bgLocationClient?.disableBackgroundLocation(true)
+            bgLocationClient?.onDestroy()
+        } catch (_: Throwable) {}
+        bgLocationClient = null
         try { wakeLock?.release() } catch (_: Exception) {}
-        wakeLock = null
+        wakeLock = null; instance = null
         super.onDestroy()
     }
 

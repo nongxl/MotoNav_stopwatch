@@ -13,7 +13,7 @@ import java.util.zip.Deflater;
  */
 public final class CoverPacket {
     public static final int TYPE_COVER = 6;
-    public static final int TARGET_SIZE = 140;
+    public static final int TARGET_SIZE = 180;
     public static final int FLAG_PALETTE = 0x8000;
     public static final int FLAG_DEFLATE = 0x2000;
 

@@ -18,17 +18,24 @@ object CoverFeeder {
     private val main = Handler(Looper.getMainLooper())
     private var coverId = 0
     private var lastKey: String = ""
+    private var lastWireBytes: ByteArray? = null
 
-    fun feedCover(bitmap: Bitmap?, key: String) {
+    fun needsCover(key: String): Boolean = key.isBlank() || key != lastKey || lastWireBytes == null
+
+    fun feedCover(bitmap: Bitmap?, key: String, force: Boolean = false) {
         if (bitmap == null) {
             clearCover()
             return
         }
 
         if (key.isNotBlank() && key == lastKey) {
-            return
+            val cached = lastWireBytes
+            if (force && cached != null) {
+                coverId = (coverId + 1) and 0xFF
+                BleLink.sendBulk(CoverPacket.TYPE_COVER, coverId, cached)
+            }
+            if (!force || cached != null) return
         }
-        lastKey = key
 
         val origW = bitmap.width
         val origH = bitmap.height
@@ -36,6 +43,9 @@ object CoverFeeder {
             clearCover()
             return
         }
+        lastKey = key
+        lastWireBytes = null
+        val expectedKey = key
 
         // 居中等比裁切并缩放到 140x140
         val side = minOf(origW, origH)
@@ -56,6 +66,8 @@ object CoverFeeder {
         worker.execute {
             val encoded = CoverPacket.encode(argb, TARGET_SIZE, TARGET_SIZE) ?: return@execute
             main.post {
+                if (lastKey != expectedKey) return@post
+                lastWireBytes = encoded.wireBytes
                 coverId = (coverId + 1) and 0xFF
                 android.util.Log.i("CoverFeeder", "Sending cover bulk: id=$coverId, size=${encoded.wireBytes.size}")
                 BleLink.sendBulk(CoverPacket.TYPE_COVER, coverId, encoded.wireBytes)
@@ -64,10 +76,10 @@ object CoverFeeder {
     }
 
     fun clearCover() {
-        if (lastKey.isEmpty()) return
+        if (lastKey.isEmpty() && lastWireBytes == null) return
         lastKey = ""
+        lastWireBytes = null
         BleLink.cancelBulk(CoverPacket.TYPE_COVER)
         BleLink.send("#ZCOV,0")
     }
 }
-

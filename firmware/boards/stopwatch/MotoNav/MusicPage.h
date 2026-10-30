@@ -3,87 +3,112 @@
 
 extern uint16_t *coverBuf;
 extern bool coverValid;
+extern uint32_t musicDuration;
+extern uint32_t musicPos;
+extern uint32_t musicPosAt;
 
-// v8.1 音乐页：支持彩色专辑封面(140x140)、黑胶唱盘降级占位、歌名/歌手、状态与播控
+static inline void formatMusicTime(uint32_t sec, char *buf, size_t len) {
+  uint32_t m = sec / 60;
+  uint32_t s = sec % 60;
+  snprintf(buf, len, "%02lu:%02lu", (unsigned long)m, (unsigned long)s);
+}
+
+// 音乐页：支持彩色大专辑封面(180x180)、黑胶唱盘降级、歌曲进度条与时长、歌名/歌手与大播控按钮
 void drawMusic() {
   gfx->fillScreen(C_BLACK);
   onWaitScreen = false;
   frameIsMap = false;
 
-  printCentered("MUSIC", CX, 30, 2, C_CYAN);
+  printCentered("MUSIC", CX, 22, 2, C_CYAN);
   bool linked = bleConnected && bleAuthed;
 
-  // 1. 专辑封面区 (Y: 50~190)
+  // 1. 专辑封面区 (Y: 38 ~ 218，大小 180x180)
+  const int covSize = 180;
+  const int covX = CX - covSize / 2; // 116
+  const int covY = 38;
+
   if (linked && coverValid && coverBuf != nullptr) {
-    gfx->fillRoundRect(CX - 73, 48, 146, 146, 10, 0x18C3);
-    gfx->drawRoundRect(CX - 73, 48, 146, 146, 10, 0x4A69);
-    gfx->draw16bitRGBBitmap(CX - 70, 51, coverBuf, 140, 140);
+    gfx->fillRoundRect(covX - 3, covY - 3, covSize + 6, covSize + 6, 12, 0x18C3);
+    gfx->drawRoundRect(covX - 3, covY - 3, covSize + 6, covSize + 6, 12, 0x4A69);
+    gfx->draw16bitRGBBitmap(covX, covY, coverBuf, covSize, covSize);
   } else {
-    // 拟物黑胶唱片
-    aaDisc(CX, 120, 68, 0x10A2);
-    gfx->drawCircle(CX, 120, 52, 0x2124);
-    gfx->drawCircle(CX, 120, 36, 0x2124);
-    aaDisc(CX, 120, 24, 0x249F);
-    aaDisc(CX, 120, 6, C_BLACK);
-    gfx->drawCircle(CX, 120, 6, 0xDEFB);
+    // 拟物黑胶唱片（按 180 比例放大）
+    const int discR = 86;
+    const int discY = covY + covSize / 2;
+    aaDisc(CX, discY, discR, 0x10A2);
+    gfx->drawCircle(CX, discY, 68, 0x2124);
+    gfx->drawCircle(CX, discY, 48, 0x2124);
+    aaDisc(CX, discY, 32, 0x249F);
+    aaDisc(CX, discY, 8, C_BLACK);
+    gfx->drawCircle(CX, discY, 8, 0xDEFB);
   }
 
-  // 2. 歌名与歌手
+  // 2. 封面下方：歌曲进度条 (Y: 228 ~ 238)
+  if (linked && musicHave && musicDuration > 0) {
+    uint32_t curSec = musicPos;
+    if (musicPlaying) {
+      uint32_t elapsed = (millis() - musicPosAt) / 1000;
+      curSec = min(musicDuration, musicPos + elapsed);
+    }
+    const int barW = 200;
+    const int barH = 4;
+    const int barX = CX - barW / 2; // 106
+    const int barY = 228;
+
+    // 进度条背景
+    gfx->fillRoundRect(barX, barY, barW, barH, 2, 0x2124);
+
+    // 进度指示
+    float progress = constrain((float)curSec / (float)musicDuration, 0.0f, 1.0f);
+    int fillW = max(4, (int)(barW * progress));
+    gfx->fillRoundRect(barX, barY, fillW, barH, 2, 0x07FF); // C_CYAN
+    gfx->fillCircle(barX + fillW, barY + barH / 2, 3, C_WHITE); // 进度小白点
+
+    // 左右两侧时间文字 (当前时间 / 总时长)
+    char timeCur[16], timeTotal[16];
+    formatMusicTime(curSec, timeCur, sizeof(timeCur));
+    formatMusicTime(musicDuration, timeTotal, sizeof(timeTotal));
+    gfx->setTextColor(0x9CD3, C_BLACK);
+    gfx->setTextSize(1);
+    gfx->setCursor(barX - 36, barY - 2);
+    gfx->print(timeCur);
+    gfx->setCursor(barX + barW + 8, barY - 2);
+    gfx->print(timeTotal);
+  }
+
+  // 3. 歌名与歌手 (Y: 250, 282)
   if (hidMusicMode && linked && !appleMedia.available) {
-    printCentered("PHONE MEDIA KEYS", CX, 206, 2, C_WHITE);
-    printCentered("OPEN MUSIC APP ON PHONE", CX, 240, 2, C_GREY);
+    printCentered("PHONE MEDIA KEYS", CX, 252, 2, C_WHITE);
+    printCentered("OPEN MUSIC APP ON PHONE", CX, 284, 2, C_GREY);
   } else if (linked) {
-    drawTextImg(5, 206, 0xFF);
-    drawTextImg(6, 240, 0xBB);
+    drawTextImg(5, 252, 0xFF);
+    drawTextImg(6, 284, 0xBB);
   } else {
-    printCentered("PHONE OFFLINE", CX, 218, 2, C_GREY);
+    printCentered("PHONE OFFLINE", CX, 260, 2, C_GREY);
   }
 
-  // 3. 歌词与状态
-  bool showLyrics = linked && hidMusicMode && musicLyrics && appleMedia.available && imgs[12].showW > 0;
-  if (showLyrics) drawTextImg(12, 268, 0xDD);
-
-  const char *feedback[] = {"", "SENT", "PHONE RECEIVED", "DONE", "NO RESPONSE", "NO PLAYER", "HID SENT", "HID NOT READY", "HID SEND FAILED", "AMS SENT", "AMS SEND FAILED", "AMS QUEUED"};
-  String state = linked && musicHave ? (musicPlaying ? "PLAYING" : "PAUSED") : "NO PLAYER";
-  if (hidMusicMode) {
-    state = !hidMediaReady() ? (appleMedia.controlMask() ? "AMS MEDIA READY" : "PAIR HID IN PHONE SETTINGS") : !appleMedia.available ? "HID READY / AMS UNAVAILABLE"
-      : !appleMedia.playback.known ? "STATE UNKNOWN" : appleMedia.playback.state == 1 ? "PLAYING" : appleMedia.playback.state == 0 ? "PAUSED" : "SEEKING";
-  }
-  if (musicAck > 0 && musicAck <= 11) state = feedback[musicAck];
-  printCentered(state, CX, showLyrics ? 292 : 272, 2, musicAck == 4 ? C_ORANGE : C_GREY);
-
-  // 4. 底部播放控制触控按键 (Y: 335, 半径 43)
+  // 4. 底部播放控制触控按键 (Y: 345, 半径 40)
   for (int i = 0; i < 3; i++) {
-    int x = CX + (i - 1) * 100, y = 335;
+    int x = CX + (i - 1) * 96, y = 345;
     bool enabled = hidMusicMode ? (hidMediaReady() || appleMedia.controlReady(i)) : linked && musicHave;
     uint16_t c = enabled ? C_WHITE : C_GREY;
-    aaDisc(x, y, 43, enabled && musicPressed == i ? 0x0470 : enabled ? 0x19A7 : 0x1082);
+    aaDisc(x, y, 40, enabled && musicPressed == i ? 0x0470 : enabled ? 0x19A7 : 0x1082);
     if (i == 1) {
       if (hidMusicMode && !appleMedia.playback.known) {
-        gfx->fillTriangle(x - 19, y - 15, x - 19, y + 15, x + 1, y, c);
-        gfx->fillRect(x + 7, y - 15, 5, 30, c); gfx->fillRect(x + 16, y - 15, 5, 30, c);
+        gfx->fillTriangle(x - 17, y - 13, x - 17, y + 13, x + 1, y, c);
+        gfx->fillRect(x + 6, y - 13, 4, 26, c); gfx->fillRect(x + 14, y - 13, 4, 26, c);
       } else if (musicPlaying) {
-        gfx->fillRect(x - 13, y - 15, 8, 30, c);
-        gfx->fillRect(x + 5, y - 15, 8, 30, c);
-      } else gfx->fillTriangle(x - 10, y - 17, x - 10, y + 17, x + 17, y, c);
+        gfx->fillRect(x - 11, y - 13, 7, 26, c);
+        gfx->fillRect(x + 4, y - 13, 7, 26, c);
+      } else gfx->fillTriangle(x - 8, y - 15, x - 8, y + 15, x + 15, y, c);
     } else {
       int sign = i == 0 ? -1 : 1;
-      gfx->fillTriangle(x - sign * 12, y - 15, x - sign * 12, y + 15, x + sign * 10, y, c);
-      gfx->fillRect(x + sign * 15 - 3, y - 15, 6, 30, c);
+      gfx->fillTriangle(x - sign * 10, y - 13, x - sign * 10, y + 13, x + sign * 9, y, c);
+      gfx->fillRect(x + sign * 13 - 3, y - 13, 5, 26, c);
     }
   }
 
-  // 5. 进度时间或操作说明
-  if (hidMusicMode && appleMedia.available) {
-    double duration = AppleMediaData::duration(appleMedia.values[3].text.c_str());
-    if (duration > 0 && appleMedia.playback.known) {
-      double elapsed = appleMedia.playback.elapsed + appleMedia.playback.rate * (millis() - appleMedia.playbackAt) / 1000.0;
-      int sec = (int)constrain(elapsed, 0.0, duration), total = (int)duration;
-      char time[32]; snprintf(time, sizeof(time), "%d:%02d / %d:%02d", sec/60, sec%60, total/60, total%60);
-      printCentered(time, CX, 396, 2, C_GREY);
-    }
-  } else printCentered("SWIPE LEFT TO RETURN", CX, 402, 2, C_GREY);
-
+  // 5. 底部页面点指示
   drawPageDots();
   needFlush = true;
 }

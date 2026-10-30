@@ -56,8 +56,9 @@ object RideRecorder {
         request = if (simulation) null else mode to title.take(120)
         requestedLabel = request?.first
         gate = RideTrackMath.Gate(); failed = false; error = null
+        main.post { NavService.updateWakeLock() }
     }
-    fun stop() = work { request = null; requestedLabel = null; finishSession() }
+    fun stop() = work { request = null; requestedLabel = null; finishSession(); main.post { NavService.updateWakeLock() } }
     fun setEnabled(value: Boolean) {
         enabled = value
         work {

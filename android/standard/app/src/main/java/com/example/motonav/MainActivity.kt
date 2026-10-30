@@ -946,7 +946,16 @@ class MainActivity : AppCompatActivity() {
 
     /** 预览图放在 res/drawable-nodpi/theme_编号.png；找不到就画一个纯色圆代替 */
     private fun setThemeImage(iv: ImageView, t: Int) {
-        val id = resources.getIdentifier("theme_$t", "drawable", packageName)
+        val id = when (t) {
+            0 -> R.drawable.theme_0
+            1 -> R.drawable.theme_1
+            5 -> R.drawable.theme_5
+            MapFeeder.THEME_DRAGON -> R.drawable.theme_11
+            else -> {
+                val pkgId = resources.getIdentifier("theme_$t", "drawable", "com.example.motonav")
+                if (pkgId != 0) pkgId else resources.getIdentifier("theme_$t", "drawable", packageName)
+            }
+        }
         if (id != 0) iv.setImageResource(id)
         else iv.setImageDrawable(GradientDrawable().apply { shape = GradientDrawable.OVAL; setColor(STROKE) })
     }
@@ -1593,6 +1602,8 @@ class MainActivity : AppCompatActivity() {
 
     override fun onResume() {
         super.onResume()
+        BleLink.resetScanBackoff()
+        NavService.updateWakeLock()
         if (searchInput?.text.isNullOrBlank()) refreshHomeIdle?.invoke()     // v6.3 选路线页回来：更新“最近去过”
     }
 

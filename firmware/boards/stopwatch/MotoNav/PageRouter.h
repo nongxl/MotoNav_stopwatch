@@ -249,8 +249,8 @@ int musicButtonAt(int x, int y) {
   touchVectorToCanvas(dx, dy);
   x = lroundf(CX + dx); y = lroundf(CX + dy);
   for (int i = 0; i < 3; i++) {
-    int bx = CX + (i - 1) * 100;
-    if ((x - bx) * (x - bx) + (y - 335) * (y - 335) <= 49 * 49) return i;
+    int bx = CX + (i - 1) * 96;
+    if ((x - bx) * (x - bx) + (y - 345) * (y - 345) <= 46 * 46) return i;
   }
   return -1;
 }
@@ -301,6 +301,11 @@ void musicTick() {
   if (inNav && !cruiseOn && navDir != "S" && navDir.length() && navDist > 0 && navDist < 200 && millis() - pageAt > 3000) {
     showPageAnimated(0, -1, 0);
     return;
+  }
+  static unsigned long lastMusicSecTick = 0;
+  if (musicPlaying && musicDuration > 0 && millis() - lastMusicSecTick >= 1000) {
+    lastMusicSecTick = millis();
+    musicDirty = true;
   }
   if (musicDirty) { musicDirty = false; drawMusic(); }
 }

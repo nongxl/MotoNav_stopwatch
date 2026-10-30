@@ -115,6 +115,9 @@ bool musicHave = false, musicPlaying = false;
 int musicActions = 0;
 int musicPressed = -1, musicAck = 0;
 unsigned long musicAckUntil = 0;
+uint32_t musicDuration = 0;
+uint32_t musicPos = 0;
+uint32_t musicPosAt = 0;
 // HID adds a second GATT service to the existing authenticated navigation connection.
 bool hidMusicMode = false;                  // persisted by #HM,0/1; Android explicitly selects 0
 BLEHIDDevice *mediaHid = nullptr;

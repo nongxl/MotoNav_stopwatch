@@ -21,6 +21,7 @@ import android.view.View
 import android.view.WindowInsets
 import android.view.WindowInsetsController
 import android.widget.FrameLayout
+import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.TextView
 import android.widget.Toast
@@ -77,6 +78,12 @@ class NavActivity : AppCompatActivity() {
     private lateinit var overviewBtn: TextView
     private lateinit var muteBtn: TextView
     private lateinit var arrivedCard: LinearLayout
+    private lateinit var crossCard: FrameLayout
+    private lateinit var crossImg: ImageView
+    private var crossShowing = false
+    private var bicyclePolyline: com.amap.api.maps.model.Polyline? = null
+    private var fallbackPolyline: com.amap.api.maps.model.Polyline? = null
+    private var lastBicyclePathKey: String = ""
 
     private var overview = false
     private var muted = false
@@ -139,6 +146,10 @@ class NavActivity : AppCompatActivity() {
         buildSide()
         buildBottomBar()
         buildArrived()
+        buildCrossCard()
+        NaviBridge.onCrossUpdate = { bmp: Bitmap? ->
+            if (bmp != null) showCrossCard(bmp) else hideCrossCard()
+        }
         setContentView(root)
 
         root.setOnApplyWindowInsetsListener { _, ins ->
@@ -169,6 +180,88 @@ class NavActivity : AppCompatActivity() {
         handler.post(refresh)
     }
 
+    private fun buildCrossCard() {
+        val screenH = resources.displayMetrics.heightPixels
+        val cardH = (screenH * 0.46f).toInt()
+        crossCard = FrameLayout(this).apply {
+            visibility = View.GONE
+            translationY = -cardH.toFloat()
+            background = GradientDrawable().apply {
+                setColor(Color.parseColor("#EE1A1A1E"))
+                cornerRadius = dp(16).toFloat()
+                setStroke(dp(1), Color.parseColor("#33FFFFFF"))
+            }
+            elevation = dp(16).toFloat()
+            clipToOutline = true
+        }
+
+        crossImg = ImageView(this).apply {
+            scaleType = ImageView.ScaleType.FIT_CENTER
+        }
+        crossCard.addView(crossImg, FrameLayout.LayoutParams(-1, -1))
+
+        val tagView = TextView(this).apply {
+            text = "路口实景"
+            textSize = 11f
+            typeface = S.BOLD
+            setTextColor(Color.WHITE)
+            background = GradientDrawable().apply {
+                setColor(Color.parseColor("#CC000000"))
+                cornerRadius = dp(6).toFloat()
+            }
+            setPadding(dp(8), dp(3), dp(8), dp(3))
+        }
+        crossCard.addView(tagView, FrameLayout.LayoutParams(-2, -2).apply {
+            topMargin = dp(10); leftMargin = dp(12)
+        })
+
+        val closeBtn = TextView(this).apply {
+            text = "✕"
+            textSize = 14f
+            gravity = Gravity.CENTER
+            setTextColor(Color.parseColor("#AAAAAA"))
+            background = GradientDrawable().apply {
+                setColor(Color.parseColor("#66000000"))
+                cornerRadius = dp(12).toFloat()
+            }
+            setOnClickListener { hideCrossCard() }
+        }
+        crossCard.addView(closeBtn, FrameLayout.LayoutParams(dp(26), dp(26)).apply {
+            topMargin = dp(10); rightMargin = dp(12); gravity = Gravity.TOP or Gravity.END
+        })
+
+        root.addView(crossCard, FrameLayout.LayoutParams(-1, cardH, Gravity.TOP).apply {
+            leftMargin = dp(8); rightMargin = dp(8); topMargin = dp(8)
+        })
+    }
+
+    private fun showCrossCard(bmp: Bitmap) {
+        crossImg.setImageBitmap(bmp)
+        if (!crossShowing) {
+            crossShowing = true
+            crossCard.visibility = View.VISIBLE
+            crossCard.animate().cancel()
+            crossCard.animate()
+                .translationY(0f)
+                .setDuration(350)
+                .setInterpolator(android.view.animation.DecelerateInterpolator())
+                .start()
+        }
+    }
+
+    private fun hideCrossCard() {
+        if (!crossShowing && crossCard.visibility == View.GONE) return
+        crossShowing = false
+        crossCard.animate().cancel()
+        val h = crossCard.height.takeIf { it > 0 } ?: (resources.displayMetrics.heightPixels * 0.46f).toInt()
+        crossCard.animate()
+            .translationY(-h.toFloat() - dp(16))
+            .setDuration(280)
+            .setInterpolator(android.view.animation.AccelerateInterpolator())
+            .withEndAction { crossCard.visibility = View.GONE }
+            .start()
+    }
+
     // ================= 高德导航地图 =================
 
     private fun makeOptions(): AMapNaviViewOptions {
@@ -182,8 +275,8 @@ class NavActivity : AppCompatActivity() {
         Refl.call(o, "setAutoChangeZoom", true)
         Refl.call(o, "setPointToCenter", 0.5, 0.64)     // 车的位置偏下，前方的路多看一点
         Refl.call(o, "setLaneInfoShow", false)
-        Refl.call(o, "setModeCrossDisplayShow", false)
-        Refl.call(o, "setRealCrossDisplay", false)
+        Refl.call(o, "setModeCrossDisplayShow", true)
+        Refl.call(o, "setRealCrossDisplay", true)
         Refl.call(o, "setTrafficBarEnabled", false)
         Refl.call(o, "setCompassEnabled", false)
         Refl.call(o, "setSettingMenuEnabled", false)
@@ -495,7 +588,50 @@ class NavActivity : AppCompatActivity() {
         }
     }
 
+    private fun updateBicyclePolyline() {
+        val n = navi ?: return
+        val map = naviView.map ?: return
+        val isBicycle = NaviBridge.directRouteMode == LocalRouting.BICYCLE || ShareGuide.route?.isTravel == true
+        if (!isBicycle) return
+        val path = n.naviPath ?: return
+        val coords = path.coordList ?: return
+        if (coords.size < 2) return
+        val key = "${path.allLength}:${coords.size}:${coords.firstOrNull()?.latitude}"
+        if (bicyclePolyline == null || key != lastBicyclePathKey) {
+            try {
+                bicyclePolyline?.remove()
+                val pts = coords.map { com.amap.api.maps.model.LatLng(it.latitude, it.longitude) }
+                bicyclePolyline = map.addPolyline(
+                    com.amap.api.maps.model.PolylineOptions()
+                        .addAll(pts)
+                        .width(S.dp(this@NavActivity, 6f))
+                        .color(Color.parseColor("#00E5FF"))
+                        .zIndex(10f)
+                )
+                lastBicyclePathKey = key
+            } catch (_: Throwable) {}
+        }
+    }
+
+    private fun ensureRoutePolyline() {
+        val pts = NaviBridge.activeRoutePoints ?: ShareGuide.route?.pts ?: return
+        if (pts.size < 2) return
+        val map = naviView.map ?: return
+        try {
+            if (fallbackPolyline == null) {
+                fallbackPolyline = map.addPolyline(
+                    com.amap.api.maps.model.PolylineOptions()
+                        .addAll(pts.map { com.amap.api.maps.model.LatLng(it[0], it[1]) })
+                        .width(S.dp(this, 6f))
+                        .color(Color.parseColor("#9900E5FF"))
+                        .zIndex(0.5f)
+                )
+            }
+        } catch (_: Throwable) {}
+    }
+
     private fun update() {
+        updateBicyclePolyline()
         mapStatus.text = MapFeeder.loadingStatus() + "\n" + if (emulate) "模拟导航 · 不记录轨迹" else RideRecorder.status()
         val B = NaviBridge
         // v4.9 更快路线提示
@@ -562,11 +698,24 @@ class NavActivity : AppCompatActivity() {
 
     // ================= 生命周期 =================
 
-    override fun onResume() { super.onResume(); naviView.onResume() }
+    override fun onResume() {
+        super.onResume()
+        naviView.onResume()
+        try { navi?.resumeNavi() } catch (_: Throwable) {}
+        try { naviView.recoverLockMode() } catch (_: Throwable) {}
+        ensureRoutePolyline()
+        muted = getSharedPreferences("motonav", Context.MODE_PRIVATE).getBoolean("nav_muted", false)
+        NaviVoice.muted = muted
+        navi?.let { NaviVoice.applyTo(it) }
+        styleMute()
+    }
     override fun onPause() { super.onPause(); naviView.onPause() }
     override fun onSaveInstanceState(outState: Bundle) { super.onSaveInstanceState(outState); naviView.onSaveInstanceState(outState) }
     override fun onDestroy() {
+        NaviBridge.onCrossUpdate = null
         handler.removeCallbacksAndMessages(null)
+        try { bicyclePolyline?.remove(); bicyclePolyline = null } catch (_: Throwable) {}
+        try { fallbackPolyline?.remove(); fallbackPolyline = null } catch (_: Throwable) {}
         if (isFinishing && !exited) { exited = true; NaviBridge.exitNavi() }
         naviView.onDestroy()
         super.onDestroy()

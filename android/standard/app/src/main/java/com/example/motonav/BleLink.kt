@@ -96,7 +96,7 @@ object BleLink {
         val old = gatt
         gatt = null
         old?.let { session.clear(it) }
-        ready = false; verified = false; buildingsSupported = false
+        ready = false; verified = false; buildingsSupported = false; zmapSupported = false
         capabilityQuerySent = false; rxChar = null; mtu = 23
         phyText = "?"; burstStart = 0L
         synchronized(lock) { writing = false; queue.clear(); bulkQ.clear() }
@@ -135,6 +135,7 @@ object BleLink {
     private var burstStart = 0L
     private var burstBytes = 0L
     @Volatile var buildingsSupported = false
+    @Volatile var zmapSupported = false
     @Volatile var screenStats = ""                    // v2.0.1 圆屏发来的帧率统计
     @Volatile var screenProf = ""                     // v5.8 每帧各步骤用时
     @Volatile var screenFps = ""                      // v2.6 给新界面用：帧率、屏幕速度、快速刷屏
@@ -212,13 +213,16 @@ object BleLink {
             triedDirect = false // A failed direct attempt gets a complete scan before trying again.
             val scanner = ad.bluetoothLeScanner ?: run { status = "无法扫描"; scheduleRetry(); return }
             val filters = listOf(ScanFilter.Builder().setServiceUuid(ParcelUuid(SERVICE_UUID)).build())
-            val settings = ScanSettings.Builder().setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY).build()
+            // 优化功耗：初次扫描使用 BALANCED 均衡模式，多次未找到则降级为 LOW_POWER 低功耗模式，杜绝 100% 满负荷发热
+            val scanMode = if (scanRetryCount < 2) ScanSettings.SCAN_MODE_BALANCED else ScanSettings.SCAN_MODE_LOW_POWER
+            val settings = ScanSettings.Builder().setScanMode(scanMode).build()
             scanning = true
             status = "正在搜索圆屏…"
             candidate = null
             scanStartAt = now()
             scanner.startScan(filters, settings, scanCallback)
-            handler.postDelayed(scanTimeout, SCAN_TIMEOUT_MS)
+            val timeoutMs = if (scanRetryCount < 2) 8000L else 6000L
+            handler.postDelayed(scanTimeout, timeoutMs)
             handler.postDelayed(pickCandidate, PREFER_MS)          // v7.8
         } catch (e: SecurityException) {
             scanning = false
@@ -235,12 +239,26 @@ object BleLink {
         }
     }
 
+    private var scanRetryCount = 0
+
+    fun resetScanBackoff() {
+        scanRetryCount = 0
+    }
+
     private val retryRunnable = Runnable { appContext?.let { connect(it) } }
 
     private fun scheduleRetry() {
         if (!auto) return
         handler.removeCallbacks(retryRunnable)
-        handler.postDelayed(retryRunnable, RETRY_MS)
+        scanRetryCount++
+        // 指数退避 (Exponential Backoff)：5s -> 15s -> 30s -> 60s，未通电时极省手机电
+        val delay = when {
+            scanRetryCount <= 1 -> 5000L
+            scanRetryCount == 2 -> 15000L
+            scanRetryCount == 3 -> 30000L
+            else -> 60000L
+        }
+        handler.postDelayed(retryRunnable, delay)
     }
 
     private fun stopScan() {
@@ -287,6 +305,7 @@ object BleLink {
 
     private fun connectDevice(device: BluetoothDevice, name: String) {
         stopScan()
+        scanRetryCount = 0
         candidate = null
         handler.removeCallbacks(retryRunnable)
         screenName = name
@@ -359,6 +378,7 @@ object BleLink {
         gatt?.device?.address?.let { saveLast(it); skipAddr = "" }
         trace("authenticated")
         val g = gatt ?: return
+        try { g.requestConnectionPriority(BluetoothGatt.CONNECTION_PRIORITY_HIGH) } catch (_: Exception) {}
         if (ready) {
             session.move(g, Phase.AUTH, Phase.READY, now(), 0)
             status = "已连接（高速模式，数据包 ${maxWrite()} 字节）"
@@ -374,6 +394,11 @@ object BleLink {
         if(msg=="CAP,BLD,1") {
             markVerified()
             handler.post { if(!buildingsSupported) { buildingsSupported=true;MapFeeder.onBuildingCapability() } }
+            return
+        }
+        if(msg=="CAP,ZMAP,1") {
+            markVerified()
+            handler.post { if(!zmapSupported) { zmapSupported=true;MapFeeder.onZmapCapability() } }
             return
         }
         val p = msg.split(',')
@@ -417,6 +442,13 @@ object BleLink {
             val t = p[1].toIntOrNull() ?: return
             val id = p[2].toIntOrNull() ?: return
             MapFeeder.onAck(t, id)
+            return
+        }
+        if (p.size >= 3 && p[0] == "N") {
+            val t = p[1].toIntOrNull() ?: return
+            val id = p[2].toIntOrNull() ?: return
+            MapFeeder.onNack(t, id)
+            return
         }
     }
 
@@ -754,9 +786,9 @@ object BleLink {
                     burstBytes += b.data.size
                     if (bulkQ.isEmpty()) {
                         val dt = (writeStartedAt - burstStart) / 1000.0
-                        if (burstBytes >= 8 * 1024 && dt > 0.05) {
+                        if (burstBytes >= 2 * 1024 && dt > 0.03) {
                             lastRateKBs = burstBytes / 1024.0 / dt
-                            lastBurstKB = (burstBytes / 1024).toInt()
+                            lastBurstKB = maxOf(1, (burstBytes / 1024).toInt())
                             if (lastRateKBs > bestRateKBs) bestRateKBs = lastRateKBs
                         }
                         burstStart = 0L
