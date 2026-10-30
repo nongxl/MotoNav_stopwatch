@@ -102,6 +102,7 @@ class NavActivity : ComponentActivity() {
     private var arrivedAt = 0L
     private var nearShown: Boolean? = null
     private var bicyclePolyline: com.amap.api.maps.model.Polyline? = null
+    private var fallbackPolyline: com.amap.api.maps.model.Polyline? = null
     private var lastBicyclePathKey: String = ""
 
     @Suppress("DEPRECATION")
@@ -751,11 +752,32 @@ class NavActivity : ComponentActivity() {
         } else camBox.visibility = View.GONE
     }
 
+
+    private fun ensureRoutePolyline() {
+        val pts = NaviBridge.activeRoutePoints ?: ShareGuide.route?.pts ?: return
+        if (pts.size < 2) return
+        val map = naviView.map ?: return
+        try {
+            if (fallbackPolyline == null) {
+                fallbackPolyline = map.addPolyline(
+                    com.amap.api.maps.model.PolylineOptions()
+                        .addAll(pts.map { com.amap.api.maps.model.LatLng(it[0], it[1]) })
+                        .width(S.dp(this, 6f))
+                        .color(Color.parseColor("#9900E5FF"))
+                        .zIndex(0.5f)
+                )
+            }
+        } catch (_: Throwable) {}
+    }
+
     // ================= 生命周期 =================
 
     override fun onResume() {
         super.onResume();if(redirectedToSingle)return
         naviView.onResume()
+        try { navi?.resumeNavi() } catch (_: Throwable) {}
+        try { naviView.recoverLockMode() } catch (_: Throwable) {}
+        ensureRoutePolyline()
         FusionCarUi.closeConsole(this)
         muted=getSharedPreferences("motonav",Context.MODE_PRIVATE).getBoolean("nav_muted",false)
         NaviVoice.muted=muted
@@ -771,6 +793,7 @@ class NavActivity : ComponentActivity() {
         NaviBridge.onCrossUpdate = null
         handler.removeCallbacksAndMessages(null)
         try { bicyclePolyline?.remove(); bicyclePolyline = null } catch (_: Throwable) {}
+        try { fallbackPolyline?.remove(); fallbackPolyline = null } catch (_: Throwable) {}
         if (!redirectedToSingle && isFinishing && !exited) { exited = true; NaviBridge.exitNavi(navigationEpoch) }
         if(::naviView.isInitialized)naviView.onDestroy()
         super.onDestroy()
