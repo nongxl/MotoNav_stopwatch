@@ -1,18 +1,29 @@
 # MotoNav
 
-手机配合 ESP32-S3 圆屏的导航项目。安卓现在分成**两套独立工程**，请按是否需要红绿灯读秒选择；不要把两套源码互相覆盖。iOS 本轮保持原样。
+手机配合 ESP32-S3 圆屏的导航项目。安卓现在分成**两套独立工程**，请按是否需要红绿灯读秒选择；不要把两套源码互相覆盖。iOS 最新源码更新为 **0.16.0 Build12**，见下方说明。
 
 | 选择 | 当前版本 | 源码与构建说明 | 需要什么 |
 | --- | --- | --- | --- |
 | **普通版，不带读秒** | **8.3.26** | [android/standard](android/standard/README.md) | 本人的包名、签名及高德 Android Key；根目录一键打包默认生成此版 |
 | **读秒版** | **8.3.26-single.31** | [android/countdown](android/countdown/README.md) | 同样需自己的 Key 和签名；完整构建入口自动获取 provider.apk，无需另找组件 |
-| **1.75 圆屏通用固件** | **7.12.10-pages.4** | [固件说明](firmware/README.md) · [更新详情](docs/RELEASE-FIRMWARE-7.12.10-pages.4.md) | 微雪 ESP32-S3-Touch-AMOLED-1.75；不能刷到 1.85B 或 M5Stack |
+| **iOS** | **0.16.0 Build12** | [iOS 使用与构建](ios/README.md) · [更新说明](docs/RELEASE-IOS-0.16.0-build12.md) | 自己的签名身份、高德 iOS Key；不含读秒 |
+| **1.75 圆屏通用固件源码** | **7.12.10-pages.5** | [固件说明](firmware/README.md) · [更新详情](docs/RELEASE-FIRMWARE-7.12.10-pages.5.md) | 微雪 ESP32-S3-Touch-AMOLED-1.75；不能刷到 1.85B 或 M5Stack |
 
-**固件下载：[7.12.10-pages.4 Release](https://github.com/zyn950929/MotoNav/releases/tag/firmware-v7.12.10-pages.4)**。Windows 下载 `MotoNav-1.75-v7.12.10-pages.4-Universal-Flasher.zip`，完整解压后双击“一键烧录.bat”。默认应用升级保留设置和配对；首次完整安装会整片擦除，按提示先确认板型和备份。
+pages.5 配套源码已更新；构建方式见上方固件说明。**历史固件成品：[7.12.10-pages.4 Release](https://github.com/zyn950929/MotoNav/releases/tag/firmware-v7.12.10-pages.4)**。Windows 下载 `MotoNav-1.75-v7.12.10-pages.4-Universal-Flasher.zip`，完整解压后双击“一键烧录.bat”。默认应用升级保留设置和配对；首次完整安装会整片擦除，按提示先确认板型和备份。
 
 **公开固件使用通用 MotoNav／品牌开机动画，不含维护者个人 Rebel500 图片。** 1.85B 仍保留原来的 7.12.3-185B 源码，本轮没有升级或生成其新固件，禁止混刷。
 
-## 最新更新（2026-10-29）：读秒版省电优化
+## 最新更新（2026-10-31）：iOS 0.16.0 Build12
+
+iOS 已更新四栏目界面、途经点/加油站/收藏与历史、自行车路径修正、时间与音乐信息处理、底图流控和衔接记录导出；Build12 使用新的红白导航箭头与摩托车山路图标，Swift 功能代码与 Build11 相同。
+
+**UI 参考移植并适配自 [coolcoolmanman（@coolcoolmanman-design）的 MotoNav](https://github.com/coolcoolmanman-design/MotoNav)，参考 0.15.21-tpms 的 [c01d6db1](https://github.com/coolcoolmanman-design/MotoNav/tree/c01d6db1a323e91d0b0210b796d9bb6a0cd7bd0f)。** 感谢原作者的界面设计与实现，具体范围见 [UI 来源与致谢](ios/UI-SOURCE-NOTICE.md)。
+
+楼块连续性修正需要 App 与 **1.75 pages.5** 固件配套：新基础图到达时按精确地理坐标保留重叠区域已知楼块，新道路、水面与新楼块优先。安卓功能代码本轮不变，旧客户端不主动开启新保留机制。新组合尚待用户实体圆屏复测，已完成编译和桌面检查不代表实路验证。
+
+[详细更新](docs/RELEASE-IOS-0.16.0-build12.md) · [验证记录](docs/VERIFY-IOS-0.16.0-build12.md) · [iOS Actions 构建产物](https://github.com/zyn950929/MotoNav/actions/workflows/release-ios.yml) · [pages.5 构建与升级](docs/RELEASE-FIRMWARE-7.12.10-pages.5.md)
+
+## 历史更新（2026-10-29）：读秒版省电优化
 
 本次省电优化基于 **[@nongxl](https://github.com/nongxl)** 提交的 **[PR #9](https://github.com/zyn950929/MotoNav/pull/9)**（[原始提交 a57019d](https://github.com/zyn950929/MotoNav/commit/a57019d5f161625b4da6c6fdafea62dfe4bcd503)），感谢作者的贡献。在该贡献基础上补充兼容修正，更新读秒版至 **8.3.26-single.31**。
 
@@ -46,7 +57,7 @@
 2. **需要读秒**：按 [读秒版 WorkBuddy 提示词](android/countdown/README.md#让-workbuddy-帮忙打包新手推荐)准备环境，再运行 `一键打包-读秒版.bat` 或该目录的 `build-countdown.py`。脚本自动从 [组件 Release](https://github.com/zyn950929/MotoNav/releases/tag/countdown-provider-9.5.13)下载并校验 `provider.apk`，放入 `android/countdown/inputs/`，以后复用缓存。直接 Gradle 生成的是中间 APK，不能当完整安装包。成品在 `android/countdown/output/`。组件是第三方构建依赖，不属于本项目自主开源代码。
 3. **申请 Key**：以每次实际打包输出的**包名和证书十六进制 SHA1**申请本人高德 Android Key，在 App 的地图 Key 页面填写。普通版可生成个人包名；读秒完整包固定为 `com.autonavi.amapauto`，SHA1 由本人的签名决定。地图不再使用天地图，不需要天地图 Key。不要照抄维护者或别人的 SHA1。
 4. **保存升级身份**：普通版备份 `android/standard/personal.properties` 和 `keystore/`；读秒版备份 `android/countdown/.local/debug.keystore`。这些文件只留在自己电脑，后续覆盖升级沿用原包名和签名。
-5. **烧录 1.75**：使用上面的独立 ZIP。日常升级选默认应用升级；首次／救砖完整安装会清空数据。同一固件基础导航协议供两种安卓使用；iOS 本轮没有新增时钟适配或真机复测，原源码与原有功能保留。
+5. **烧录 1.75**：iOS 0.16.0 的完整楼块修正按 [pages.5 说明](docs/RELEASE-FIRMWARE-7.12.10-pages.5.md)构建并升级；历史 pages.4 ZIP 不包含新修正。日常升级选默认应用升级；首次／救砖完整安装会清空数据。同一固件基础导航协议供两种安卓使用；iOS 0.16.0 Build12 已包含时间同步；本轮实体组合仍待复测，楼块连续性需配合 pages.5。
 
 **本项目的自主功能代码全程借助 AI 开发与迭代，由维护者提出需求、进行设备和路测验证。第三方 SDK、库与兼容组件不属于本项目原创，相关来源及许可另列。** 本项目自主代码仅供个人非商业使用与学习交流，具体见 [许可](LICENSE.md) 和 [第三方说明](licenses/)。
 
@@ -188,7 +199,7 @@ iPhone 新增圆屏 BLE HID 媒体按键，可向当前播放器发送播放/暂
 
 ## iPhone 安装
 
-从 [GitHub Releases](https://github.com/zyn950929/MotoNav/releases) 下载 `MotoNav-0.13.8-unsigned.ipa`，使用自己的 Apple 账号通过 Sideloadly 签名安装。新手可先看[中文图文安装教程](docs/INSTALL-BEGINNER.md)，签名与续签细节见[安装与续签说明](docs/INSTALL-IOS.md)。
+最新 iOS 源码为 **0.16.0 Build12**。从 [iOS Actions 的成功运行](https://github.com/zyn950929/MotoNav/actions/workflows/release-ios.yml)下载对应构建产物，或按 [iOS 构建说明](ios/README.md)自行生成 IPA；历史 Release/IPA 仍以其标签版本为准。使用自己的 Apple 账号签名安装，并保留 MotoNavShare 分享扩展。新手可先看[中文图文安装教程](docs/INSTALL-BEGINNER.md)，签名与续签细节见[安装与续签说明](docs/INSTALL-IOS.md)。
 
 ## Windows 一键打包
 
@@ -265,3 +276,4 @@ licenses 和各第三方库目录保留原许可及版权声明。高德 SDK 通
 iOS v0.13.7 默认使用高德建筑提取；修复 Retina 截图、相机更新时序与地图覆盖问题，并修复 App 重连错过认证通知、始终不查询圆屏建筑能力的问题。更新已安装到新手机，正常模拟导航已确认建筑地图生成和圆屏 K 回执，并通过固件解码器验证实际发送包。2026-10-17 的 120 km/h 前台模拟收到 42 次完整地图回执，用户确认此轮未再出现底图空白；地图传输延迟仍存在，详见 ios/README.md。
 
 [本次实际验证结果与未覆盖范围](docs/VERIFY-2026-10-21.md)
+

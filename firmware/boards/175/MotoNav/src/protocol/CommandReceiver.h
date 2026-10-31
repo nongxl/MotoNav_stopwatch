@@ -26,6 +26,7 @@ int hexVal(char c) {
 
 // 处理文字类消息
 void handleText(const String &m) {
+  if(m=="#BC,1" || m=="#BC,0") {setRasterBuildingCarry(m=="#BC,1");return;}
   if(m.startsWith("#TIME,")) {
     if(homeClock.receive(m.c_str(),millis())) {
       drawHomeClock();

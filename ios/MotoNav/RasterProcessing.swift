@@ -36,6 +36,21 @@ enum RasterPacket {
         guard b.count >= 16 else { return false }
         return valid(data, frame: u16(b, 0), x: i32(b, 2), y: i32(b, 6))
     }
+    /// Check RLE runs without expanding a 1.44M-pixel frame on the main thread.
+    static func hasMapContent(_ data:Data)->Bool {
+        guard valid(data) else{return false}
+        let b=[UInt8](data)
+        if u16(b,14)&0x8000 != 0{return true}
+        var p=16,materials=0
+        let minimum=MapGeo.minMaterialPixels(w:size,h:size)
+        while p<b.count {
+            let v=b[p];p+=1
+            var count=Int(v>>4)+1
+            if v>>4==15 {count+=Int(b[p]);p+=1}
+            if v&15 != 0 {materials+=count;if materials>=minimum{return true}}
+        }
+        return false
+    }
     static func forLegacy(_ data: Data) -> Data {
         guard isBuilding(data), valid(data) else { return data }
         var b = [UInt8](data); b[14] = UInt8(2000 & 255); b[15] = UInt8(2000 >> 8)
@@ -60,6 +75,27 @@ enum RasterPacket {
         return out
     }
 }
+
+enum MapStyleTransfer {
+    static func command(_ style:Int)->String {"#t,\(style),1"}
+    static func matches(_ packet:Data,style:Int)->Bool {
+        guard RasterPacket.valid(packet) else {return false}
+        let bytes=[UInt8](packet),flags=RasterPacket.u16(bytes,14)
+        if style==0 {return flags&0x8000 != 0}
+        if style==1 {return flags&0x8000 == 0}
+        if style==5 {
+            guard flags==2000 else {return false}
+            var p=16
+            while p<bytes.count {
+                let v=bytes[p];p+=1
+                if v&15>1 {return false}
+                if v>>4==15 {p+=1}
+            }
+        }
+        return true
+    }
+}
+
 
 enum AmapCapturePolicy {
     // SDK zoom is based on logical view bounds, not on Retina screenshot pixel count.
@@ -188,5 +224,43 @@ enum AmapBuildings {
         guard retained else { return incoming }
         let packet = MapGeo.encodeRaster(frameId: RasterPacket.u16(a, 0), x0: RasterPacket.i32(a, 2), y0: RasterPacket.i32(a, 6), w: n, h: n, mmPerPx: 2000 | RasterPacket.flag, idx: current)
         return RasterPacket.valid(packet) ? packet : incoming
+    }
+}
+
+
+/// Keep essential roads in front of optional roofs on a measured, slow link.
+enum MapDeliveryPolicy {
+    static func roofsFit(kmh:Int,bytes:Int,rate:Double?,coverageSeconds:Double,nextBaseBytes:Int=0)->Bool {
+        if kmh<6 {return true}
+        guard let rate=rate,rate.isFinite,rate>0,coverageSeconds.isFinite,coverageSeconds>0 else {return false}
+        // The measured rate already includes ATT waits and competing position traffic.
+        // Reserve the next road packet plus a margin before this viewport expires.
+        return Double(bytes+max(0,nextBaseBytes))/rate+1<=coverageSeconds
+    }
+    /// Unlike a colour-only legacy conversion, re-RLE the merged runs so the
+    /// missing roof layer actually reduces bytes. No 1.44M-pixel expansion.
+    static func compactBase(_ data:Data)->Data {
+        guard RasterPacket.isBuilding(data),RasterPacket.valid(data) else {return data}
+        let raw=[UInt8](data)
+        var result=Data(raw.prefix(16));result[14]=UInt8(2000&255);result[15]=UInt8(2000>>8)
+        var p=16,last=UInt8(255),run=0
+        func flush() {
+            while run>0 {
+                let count=min(271,run)
+                if count<=15 {result.append(UInt8((count-1)<<4)|last)}
+                else {result.append(0xf0|last);result.append(UInt8(count-16))}
+                run-=count
+            }
+        }
+        while p<raw.count {
+            let v=raw[p];p+=1
+            var n=Int(v>>4)+1
+            if v>>4==15 {n+=Int(raw[p]);p+=1}
+            let original=v&15,color=original>3 ? original&2:original
+            if last != color {flush();last=color}
+            run+=n
+            while run>=271 {result.append(0xf0|last);result.append(255);run-=271}
+        }
+        flush();return result
     }
 }

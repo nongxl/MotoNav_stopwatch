@@ -99,5 +99,84 @@ barrier.reset()
 check(barrier.needsResponse(seq: 0, parts: 60, retry: false, commandReady: true), "Validate first fragment before command burst")
 check(barrier.needsResponse(seq: 59, parts: 60, retry: false, commandReady: true), "Last fragment waits for actual transport response")
 check(barrier.needsResponse(seq: 5, parts: 60, retry: true, commandReady: true), "Failed barrier retry cannot silently become unconfirmed")
-check(barrier.needsResponse(seq: 5, parts: 60, retry: false, commandReady: false), "Host backpressure forces a response barrier")
+check(!barrier.needsResponse(seq: 5, parts: 60, retry: false, commandReady: false), "Host backpressure must wait for credits instead of converting each fragment into a response write")
 print("BLE bulk: \(checks) checks passed; map delivery \(String(format: "%.2f", time))s, \(commands) navigation commands")
+var clockWriter=BleBulkWriteQueue()
+clockWriter.replace(type:3,id:1,packets:[Data([1]),Data([2])])
+let held=clockWriter.next()!
+let clockWire=Data("#TIME,1793433600,28800".utf8)
+clockWriter.replace(type:0,id:1,packets:[clockWire],prioritize:true)
+check(clockWriter.next()==nil && clockWriter.inFlight?.type==held.type,"Clock cannot overlap the in-flight ATT map write")
+_ = clockWriter.complete(success:true)
+let clockPart=clockWriter.next()!
+check(clockPart.type==0 && clockPart.data==clockWire && clockWire.count>20,"Unfragmented clock command receives the next acknowledged ATT slot")
+_ = clockWriter.complete(success:true)
+check(clockWriter.next()?.data==Data([2]),"Map transfer resumes after the clock acknowledgement")
+print("PASS clock ATT serialization, priority and complete message above the default 20-byte limit")
+var changingStyle=BleBulkWriteQueue()
+changingStyle.replace(type:3,id:1,packets:[Data([11]),Data([12])])
+_ = changingStyle.next()
+changingStyle.replace(type:2,id:1,packets:[Data([20])])
+changingStyle.replace(type:0,id:1,packets:[clockWire],prioritize:true)
+changingStyle.cancel(types:[1,3])
+check(changingStyle.next()==nil,"Style cancellation preserves the outstanding ATT callback slot")
+check(changingStyle.complete(success:false) == .obsolete,"Old-style failed frame cannot retry after cancellation")
+changingStyle.replace(type:3,id:2,packets:[Data([30])])
+check(changingStyle.next()?.type==0,"Style change keeps the pending clock")
+_ = changingStyle.complete(success:true)
+check(changingStyle.next()?.type==2,"Style change keeps route geometry")
+_ = changingStyle.complete(success:true)
+check(changingStyle.next()?.id==2,"Only the new style's base map resumes")
+print("PASS style-change map cancellation without dropping clock or route packets")
+
+writer.reset();writer.replace(type:3,id:88,packets:payloads)
+check(writer.contains(type:3,id:88),"map transfer is pending before its first fragment")
+_ = writer.next()
+check(writer.contains(type:3,id:88),"in-flight fragment protects the map from replacement")
+check(!writer.contains(type:3,id:89),"pending check is specific to map ID")
+writer.acknowledge(type:3,id:88)
+check(writer.contains(type:3,id:88),"early K still retains the ATT callback slot")
+_ = writer.complete(success:true)
+check(!writer.contains(type:3,id:88),"finished map releases staged successor")
+print("PASS ID-specific map transfer protection")
+
+
+// Replay realistic byte/MTU combinations through the real write queue/pacer/barrier.
+// This measures the model's wire time instead of assuming every map takes 1–3s.
+func wireTime(bytes:Int,maxWrite:Int,rtt:Double)->Double {
+    let count=(bytes+maxWrite-16)/(maxWrite-15)
+    var queue=BleBulkWriteQueue(),pacer=BleWritePacer(),barrier=BleBulkBarrier()
+    queue.replace(type:3,id:17,packets:(0..<count).map{Data([UInt8($0&255),UInt8(($0>>8)&255)])})
+    var now=0.0,ackAt:Double?,nextPosition=0.0,positionQueued=false,delivered=0
+    while queue.hasData {
+        if now>=nextPosition {positionQueued=true;nextPosition+=0.1}
+        if let at=ackAt,now>=at {_ = queue.complete(success:true);barrier.reset();ackAt=nil;delivered+=1}
+        let choice=BleOutboundPriority.choose(commandReady:positionQueued,bulkReady:queue.canStart,bulkPending:queue.hasData,imageReady:false)
+        if choice != .idle,pacer.take(now:now) {
+            if choice == .command {positionQueued=false}
+            else if choice == .bulk,let part=queue.next() {
+                let seq=Int(part.data[0])|Int(part.data[1])<<8
+                if barrier.needsResponse(seq:seq,parts:count,retry:false,commandReady:true) {ackAt=now+rtt}
+                else {_ = queue.complete(success:true);delivered+=1}
+            }
+        }
+        now+=0.001;precondition(now<300,"wire simulation stalled")
+    }
+    check(delivered==count,"real-size map delivers all fragments in model")
+    return now
+}
+let smallMapTime=wireTime(bytes:16000,maxWrite:182,rtt:0.1)
+let detailedMapTime=wireTime(bytes:80000,maxWrite:182,rtt:0.1)
+let slowMapTime=wireTime(bytes:80000,maxWrite:182,rtt:0.18)
+check(detailedMapTime>3 && detailedMapTime>smallMapTime*3,"large raster invalidates the old three-second fixed wire assumption")
+check(slowMapTime>detailedMapTime*1.5,"ATT delay materially changes map delivery time")
+print("PASS actual-size modeled wire: 16KB=\(smallMapTime)s, 80KB=\(detailedMapTime)s, slower 80KB=\(slowMapTime)s")
+var trace=MapTraceBuffer()
+trace.append(name:"map-send",fields:["bytes":80000,"ready":true,"lat":30.1,"lng":104.2,"apiKey":"PRIVATE","cookie":"PRIVATE","job":"PRIVATE","elapsed":Double.nan],seconds:1)
+let traceJSON=try! JSONSerialization.data(withJSONObject:trace.document)
+let traceText=String(data:traceJSON,encoding:.utf8)!
+check(!traceText.contains("PRIVATE") && !traceText.contains("lat") && !traceText.contains("lng"),"trace allowlist excludes locations and secrets")
+check(traceText.contains("80000"),"trace preserves the transport measurement")
+for i in 0..<MapTraceBuffer.capacity+10 {trace.append(name:"bulk-write",fields:["seq":i],seconds:Double(i))}
+check(trace.events.count==MapTraceBuffer.capacity && trace.dropped==11,"timing diagnostics have bounded memory")
+print("PASS timing record numeric allowlist, coordinate/secret exclusion and bounded event storage")

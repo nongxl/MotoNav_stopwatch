@@ -1,4 +1,20 @@
-# 最新 1.75 通用固件 7.12.10-pages.4
+# 最新 1.75 通用固件源码 7.12.10-pages.5
+
+配合 iOS 0.16.0 Build11/12，换基础图时按精确坐标保留重叠区域已知楼块，保留在已有双缓冲中接续；道路、水面及新楼块优先。楼块关闭或切换风格时清理，不兼容的坐标系/分辨率/调色板不合并。每帧绘图代码保持原样，不增加蓝牙地图字节或建筑大缓冲。
+
+[pages.5 更新、构建与升级说明](../docs/RELEASE-FIRMWARE-7.12.10-pages.5.md) · [iOS 配套说明](../ios/README.md)
+
+本次同步源码。先前 pages.4 的 Release 成品不含此修正。使用 Arduino CLI / ESP32 Core 3.3.10 构建：`python3 firmware/build.py`，或 Windows `firmware/build.ps1 -Board 175`。独立 Windows 工具包可由 `firmware/package_flasher.py --tools-dir <esptool目录>` 生成。
+
+已有同板型/同分区 MotoNav 选应用升级，保留配对和设置。仅适用微雪 1.75 AMOLED；1.85B 仍沿用原有版本。原安卓协议保留，`#BC` 为新 iOS 显式开关；本轮未做安卓实机复测。
+
+已通过编译、实际解码器桌面回归、镜像格式/偏移/分区及独立包 VerifyOnly；新固件与用户 iPhone 的实体组合仍待验证。未准备区域的建筑仍需新数据。
+
+以下为历史版本及历史成品说明。
+
+---
+
+# 1.75 通用固件 7.12.10-pages.4（历史版本）
 
 [本轮下载与烧录说明](../docs/RELEASE-FIRMWARE-7.12.10-pages.4.md) · [Release](https://github.com/zyn950929/MotoNav/releases/tag/firmware-v7.12.10-pages.4)
 
@@ -57,3 +73,4 @@ python3 -m unittest discover -s firmware/tests -p 'test_flash_macos.py'
 四种独立地图风格及 1.75 外部供电保护详见 [7.12.3 说明](../docs/RELEASE-FIRMWARE-7.12.3.md)。Android 配套版本为 8.3.23-webmotor.4。iOS 源码/IPA 本次不变，既有 BLE 协议保留；不表示新增 Android 功能已在 iOS 实现。
 
 `boards/185b` 提供 v7.12.3-185B 实验源码，PowerShell 构建可选 `-Board 185b -PanelVariant 0/1/2`；1.75 的外接电源保护未移植过去。不同板型禁止混刷。当前仅源码更新，历史 Release 下载不代表 7.12.3。
+

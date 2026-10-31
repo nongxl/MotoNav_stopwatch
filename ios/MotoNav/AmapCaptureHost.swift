@@ -55,6 +55,8 @@ final class AmapCaptureHost: NSObject {
             view.addSubview(m); map = m
         }
         m.transform = .identity
+        // Extraction uses a light land/road palette, regardless of the phone UI theme.
+        m.overrideUserInterfaceStyle = .light
         m.bounds = CGRect(x: 0, y: 0, width: size, height: size)
         m.center = CGPoint(x: size / 2, y: size / 2)
         // GLKit uses the displayed geometry for its drawable. A one-point transform produces
@@ -85,7 +87,8 @@ final class AmapCaptureHost: NSObject {
             m.isShowsLabels = style == 0
             pending = completion; reference = nil; referenceProjection = nil; emptyBuildingChecks = 0; started = Date(); serial += 1
             let id = serial
-            m.isShowsBuildings = false; m.rotationDegree = 0; m.cameraDegree = n == 600 ? 0.05 : 0
+            // Native style keeps the SDK's own building layer; Vice City uses its separate extraction pass.
+            m.isShowsBuildings = style == 0; m.rotationDegree = 0; m.cameraDegree = n == 600 ? 0.05 : 0
             let margin = n == 600 ? 20.0 : 100.0
             let north = frame.lat(Double(y) + margin), south = frame.lat(Double(y) - Double(n)*self.mpp - margin)
             let west = frame.lng(Double(x) - margin), east = frame.lng(Double(x) + Double(n)*self.mpp + margin)
