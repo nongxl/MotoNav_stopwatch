@@ -5,7 +5,6 @@ import android.os.*
 import android.util.Log
 import com.amap.api.navi.AMapNavi
 import org.json.JSONObject
-import java.io.File
 
 /** Real-route handoff. Never mixes a real-position car light into SDK simulation. */
 object CarNavSync {
@@ -37,10 +36,6 @@ object CarNavSync {
     private val startup=ProviderStartup()
     private var startupTick:Runnable?=null
     private var warmToken=0L
-    private val engineState=ProviderEngineState()
-    private var syncToken=0L
-    private var leaseAt=0L
-    private var firstStartAt=0L
     private var webRouteKey=""
     private var routeAnchors:List<DoubleArray> = emptyList()
     private var routeSource="sdk"
@@ -48,13 +43,6 @@ object CarNavSync {
         WebMotorGuide.active && !WebMotorGuide.simulation && WebMotorGuide.route?.key==webRouteKey
         else epoch==NaviBridge.navigationEpoch()
     private fun now()=SystemClock.elapsedRealtime()
-    private fun renewLease(c:Context){
-        if(syncToken<=0||now()-leaseAt<5000)return
-        val temporary=File(c.filesDir,"car-nav-sync-enabled.tmp")
-        temporary.writeText("$syncToken\n${now()+15000}")
-        check(temporary.renameTo(File(c.filesDir,"car-nav-sync-enabled")))
-        leaseAt=now()
-    }
 
     fun start(c:Context) {
         if(registered)return
@@ -120,8 +108,6 @@ object CarNavSync {
         if(!CarSignalAlignment.coordinate(first[0],first[1])||!CarSignalAlignment.coordinate(last[0],last[1]))return
         TrafficPositionMonitor.start(c)
         requested=true;simulation=false;epoch=NaviBridge.navigationEpoch();requestedAt=now()
-        syncToken=maxOf(now(),syncToken+1);leaseAt=0;firstStartAt=0;engineState.reset(syncToken)
-        renewLease(c)
         expectedLat=last[0];expectedLng=last[1]
         guideAt=0;guides=0
         status="正在准备路口信息"
@@ -152,53 +138,32 @@ object CarNavSync {
                 .putExtra("EXTRA_${anchors[a]}MIDLON",point[1])
                 .putExtra("EXTRA_${anchors[a]}MIDNAME","MotoNav 路线点${a+1}")
         }
-        val token=epoch;val routeKey=webRouteKey;val session=syncToken
-        fun valid()=current()&&epoch==token&&webRouteKey==routeKey&&syncToken==session
+        val token=epoch;val routeKey=webRouteKey
+        fun valid()=current()&&epoch==token&&webRouteKey==routeKey
         startup.begin(now())
         val task=object:Runnable {override fun run(){
             if(!valid())return
-            runCatching{renewLease(c)}.onFailure{Log.w("MotoNavCarSync","engine-state lease",it)}
-            if(startup.running()&&engineState.stopped(now())){
-                if(startup.recoverStoppedEngine(now())){
-                    guideAt=0;startSent=false;firstStartAt=0;engineState.reset(syncToken)
-                    Log.w("MotoNavCarSync","confirmed native stop; bounded recovery=${startup.recoveries()}")
-                }else{
-                    status="路口导航连续中断，请重新开始导航"
-                    File(c.filesDir,"car-nav-sync-enabled").delete();return
-                }
-            }
-            val acknowledged=startSent&&engineState.realStarted(firstStartAt,now())
+            val acknowledged=startSent&&carType==0&&hasFreshGuide()&&
+                CarSignalAlignment.metres(expectedLat,expectedLng,endLat,endLng)<=100
             when(startup.next(now(),FusionCarUi.prepared(c,warmToken),acknowledged)){
                 ProviderStartup.WARM->{
                     warmToken=now();FusionCarUi.warm(c,warmToken)
                     status="正在初始化路口信息服务"
                 }
                 ProviderStartup.PLAN->{
-                    requestedAt=now();guideAt=0;calculating=true;startSent=false;firstStartAt=0
+                    requestedAt=now();guideAt=0;calculating=true;startSent=false
                     muteProvider();send(i)
                     Log.i("MotoNavCarSync","route-request epoch=$token source=$routeSource points=${path.size} anchors=${routeAnchors.size} attempt=${startup.plans()}")
                 }
                 ProviderStartup.START->{
-                    if(!startSent)firstStartAt=now()
-                    startSent=true;muteProvider()
-                    // 10032 leaves a planned-route preview. Select that route and
-                    // explicitly start it; a generic navigation operation can be lost
-                    // while the HMI is still changing from calculation to preview.
-                    send(Intent().putExtra("KEY_TYPE",10055).putExtra("EXTRA_CHANGE_ROAD",1)
-                        .putExtra("EXTRA_START_NAVI",true))
+                    startSent=true;muteProvider();send(Intent().putExtra("KEY_TYPE",10009))
                     status="等待路口导航确认"
                     Log.i("MotoNavCarSync","start-navigation epoch=$token attempt=${startup.starts()}")
                 }
-                ProviderStartup.FAILED->{
-                    File(c.filesDir,"car-nav-sync-enabled").delete()
-                    status="路口服务未确认启动，请检查首次授权或重新开始导航";return
-                }
+                ProviderStartup.FAILED->{status="路口服务未确认启动，请检查首次授权或进入车机查看";return}
             }
-            if(startup.running()&&acknowledged&&status=="等待路口导航确认"){
-                status="路口导航已启动，等待前方路口数据"
-                Log.i("MotoNavCarSync","navigation-acknowledged epoch=$token realEngine=true guides=$guides")
-            }
-            handler.postDelayed(this,if(startup.running())1000 else 500)
+            if(!startup.running())handler.postDelayed(this,500)
+            else Log.i("MotoNavCarSync","navigation-acknowledged epoch=$token guides=$guides")
         }}
         startupTick=task;handler.post(task)
     }
@@ -217,19 +182,15 @@ object CarNavSync {
         val owned=requested
         startupTick?.let{handler.removeCallbacks(it)};startupTick=null;startup.stop()
         TrafficPositionMonitor.stop()
-        context?.let{FusionCarUi.finishWarm(it,warmToken)}
-        context?.let{File(it.filesDir,"car-nav-sync-enabled").delete();File(it.filesDir,"car-nav-sync-enabled.tmp").delete()}
-        engineState.reset(0);firstStartAt=0;leaseAt=0
+        context?.let{
+            FusionCarUi.finishWarm(it,warmToken)
+            FusionCarUi.stopService(it)
+        }
         requested=false;guideAt=0;status="联动已停止"
         webRouteKey="";routeAnchors=emptyList();routeSource="sdk"
         if(owned)send(Intent().putExtra("KEY_TYPE",10010))
     }
     private fun receive(i:Intent) {
-        if(i.getStringExtra("kind")=="engine"){
-            if(current())engineState.accept(i.getLongExtra("syncToken",0),i.getLongExtra("at",0),
-                i.getBooleanExtra("real",false),i.getBooleanExtra("simulation",false),now())
-            return
-        }
         if(i.hasExtra("kind")&&i.getStringExtra("kind")!="guide")return
         if(!current())return
         if(!startup.acceptsGuide())return
@@ -281,8 +242,7 @@ object CarNavSync {
     fun webAnchors(key:String)=if(webRouteKey==key)routeAnchors.map{it.clone()} else emptyList()
     fun webSummary():String {
         if(webRouteKey.isEmpty() || !requested)return status
-        if(!startup.running())return status
-        if(guideAt==0L)return "后台导航已启动，等待路口引导"
+        if(guideAt==0L)return "后台路线同步中 · ${routeAnchors.size} 个关键点"
         return if(webRouteAgreement().isEmpty())"后台路线当前路段匹配 · ${routeAnchors.size} 个关键点"
             else "后台路线核对中 · 摩托车导航继续"
     }
@@ -316,7 +276,7 @@ object CarNavSync {
         if(wanted!=carWanted)return false
         return wanted==4 || kotlin.math.abs(carTurnMetres-(if(WebMotorGuide.active)WebMotorGuide.turnMeters else NaviBridge.trafficLightGuidanceTurnMetres()))<=35 || stoppedGuide()
     }
-    fun summary():String=if(requested&&!startup.running()&&startup.plans()==0&&now()-requestedAt>30000&&guideAt==0L)"路口信息服务暂未就绪，可在高级诊断完成首次初始化" else status
+    fun summary():String=if(requested&&now()-requestedAt>30000&&guideAt==0L)"路口信息服务暂未就绪，可在高级诊断完成首次初始化" else status
     fun debug()=JSONObject().put("source",routeSource).put("webRouteKey",webRouteKey)
         .put("anchors",org.json.JSONArray(routeAnchors.map{org.json.JSONArray(it.toList())}))
         .put("webAgreement",if(webRouteKey.isNotEmpty())webRouteAgreement() else "")
@@ -325,8 +285,6 @@ object CarNavSync {
         .put("requested",requested).put("simulation",simulation).put("epoch",epoch)
         .put("engineReady",context?.let{FusionCarUi.prepared(it,warmToken)}?:false)
         .put("startupPlans",startup.plans()).put("startupStarts",startup.starts()).put("startupAcknowledged",startup.running())
-        .put("nativeStateFresh",engineState.fresh(now())).put("nativeReal",engineState.real())
-        .put("nativeSimulation",engineState.simulation()).put("startupRecoveries",startup.recoveries())
         .put("guides",guides).put("carType",carType).put("carIcon",carIcon)
         .put("carCoordinatePresent",CarSignalAlignment.coordinate(carLat,carLng))
         .put("carTurnMetres",carTurnMetres).put("guideAgeMs",if(guideAt>0)now()-guideAt else -1)

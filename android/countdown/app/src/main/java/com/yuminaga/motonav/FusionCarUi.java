@@ -97,6 +97,21 @@ public final class FusionCarUi implements Application.ActivityLifecycleCallbacks
             Log.i("MotoNavProviderUi","background service requested");
         } catch(RuntimeException e){Log.w("MotoNavProviderUi","background service unavailable",e);}
     }
+    public static void stopService(Context c){
+        if(c==null || !"com.autonavi.amapauto".equals(c.getPackageName()))return;
+        try {
+            Intent i=new Intent().setClassName(c.getPackageName(),
+                "com.autonavi.amapauto.background.AutoBackgroundService");
+            c.stopService(i);
+            Log.i("MotoNavProviderUi","background service stopped");
+        } catch(RuntimeException e){Log.w("MotoNavProviderUi","background service stop unavailable",e);}
+        try {
+            NotificationManager manager=(NotificationManager)c.getSystemService(Context.NOTIFICATION_SERVICE);
+            if(manager!=null){
+                manager.cancel(7317);
+            }
+        } catch(RuntimeException ignored){}
+    }
     public static void openConsole(Context c){
         openConsole(c,"com.yuminaga.motonav.MainActivity");
     }
@@ -127,8 +142,8 @@ public final class FusionCarUi implements Application.ActivityLifecycleCallbacks
         button.setText("返回 MotoNav");button.setAllCaps(false);
         button.setTextColor(Color.WHITE);button.setBackgroundColor(0xff352b47);
         float density=a.getResources().getDisplayMetrics().density;
-        FrameLayout.LayoutParams p=new FrameLayout.LayoutParams((int)(160*density),(int)(48*density),Gravity.TOP|Gravity.END);
-        p.topMargin=(int)(8*density);p.rightMargin=(int)(8*density);
+        FrameLayout.LayoutParams p=new FrameLayout.LayoutParams((int)(160*density),(int)(48*density),Gravity.BOTTOM|Gravity.START);
+        p.bottomMargin=(int)(8*density);p.leftMargin=(int)(8*density);
         content.addView(button,p);
         button.setOnClickListener(v->{
             String destination="com.yuminaga.motonav.MainActivity";
