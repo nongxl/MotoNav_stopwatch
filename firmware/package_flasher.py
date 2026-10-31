@@ -38,7 +38,7 @@ def main():
         dest=package/'firmware/panel0'/path.name;dest.parent.mkdir(exist_ok=True,parents=True);shutil.copy2(path,dest)
         panel[kind]={'path':dest.relative_to(package).as_posix(),'bytes':dest.stat().st_size,'sha256':sha(dest).upper()}
     bundle={'schema':1,'platform':'universal','boards':[{'id':'175','label':'微雪 ESP32-S3-Touch-AMOLED-1.75（466×466）',
-        'versions':[{'label':f'v{version} · 通用开机 · 固定页面与时钟 · 启动稳定性修复','version':version,'panels':[panel]}]}]}
+        'versions':[{'label':f'v{version} · 通用开机 · 楼块连续保留 · 固定页面与时钟','version':version,'panels':[panel]}]}]}
     (package/'firmware-manifest.json').write_text(json.dumps(bundle,ensure_ascii=False,indent=2)+'\n','utf8')
     verification={'firmware':version,'genericBoot':True,'personalRebelAssetIncluded':False,
         'imageHashesVerified':True,'publicBinaryFlashedOnDevice':False}
@@ -79,3 +79,4 @@ def main():
     print(json.dumps({'firmware':version,'out':str(out),'assets':list(record)},ensure_ascii=False))
 
 if __name__=='__main__':main()
+

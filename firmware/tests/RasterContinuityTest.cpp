@@ -1,11 +1,23 @@
 #include <assert.h>
 #include <stdio.h>
 #include <string.h>
-#include "../boards/stopwatch/MotoNav/RasterContinuity.h"
+#include <vector>
+#include "../boards/175/MotoNav/RasterContinuity.h"
 
 static uint8_t getPx(const uint8_t *buf, uint16_t w, int x, int y) {
-    uint32_t a = rasterNibbleAddr(w, x, y);
-    return (a & 1) ? (buf[a >> 1] & 15) : (buf[a >> 1] >> 4);
+    uint32_t a = (((uint32_t)(y >> 4) * ((w + 15) / 16) + (x >> 4)) << 8) + ((y & 15) << 4) + (x & 15);
+    return (buf[a >> 1] >> ((a & 1) << 2)) & 15;
+}
+
+static std::vector<uint8_t> packet(const uint8_t *rle, size_t size, int w, int h, int ox=0, int oy=0, bool delta=false) {
+    std::vector<uint8_t> out;
+    auto u16=[&](int v){out.push_back(v&255);out.push_back((v>>8)&255);};
+    auto i32=[&](int v){for(int i=0;i<4;i++)out.push_back((uint32_t(v)>>(8*i))&255);};
+    u16(1);i32(ox*2);i32(-oy*2);u16(w);u16(h);
+    u16(2000 | RASTER_FLAG_BUILDINGS | (delta ? RASTER_FLAG_DELTA : 0));
+    if(delta){i32(0);i32(0);}
+    out.insert(out.end(),rle,rle+size);
+    return out;
 }
 
 static size_t encodeRle(const uint8_t *grid, int n, uint8_t *out) {
@@ -39,7 +51,10 @@ int main() {
         }
     }
     size_t lenA = encodeRle(gridA, N, rleA);
-    assert(rasterDecode(rleA, lenA, bufA, W, H, 7, false));
+    auto a = packet(rleA,lenA,W,H);
+    RasterHeader full={};
+    assert(rasterCheck(a.data(),a.size(),full,N,sizeof(bufA)));
+    rasterDecode(a.data(),full,bufA);
     for (int y = 0; y < H; y++) {
         for (int x = 0; x < W; x++) {
             assert(getPx(bufA, W, x, y) == gridA[y * W + x]);
@@ -59,8 +74,10 @@ int main() {
             }
         }
         size_t lenD = encodeRle(xorGrid, N, rleDelta);
-        rasterCopyReference(bufB, bufA, W, H, ox, oy);
-        assert(rasterDecode(rleDelta, lenD, bufB, W, H, 7, true));
+        auto d = packet(rleDelta,lenD,W,H,ox,oy,true);
+        RasterHeader delta={};
+        assert(rasterCheck(d.data(),d.size(),delta,N,sizeof(bufB)));
+        rasterDecode(d.data(),delta,bufB,bufA);
         for (int y = 0; y < H; y++) {
             for (int x = 0; x < W; x++) {
                 assert(getPx(bufB, W, x, y) == gridB[y * W + x]);
@@ -70,4 +87,3 @@ int main() {
     printf("PASS: RasterContinuity full & delta decode\n");
     return 0;
 }
-

@@ -1,4 +1,10 @@
 #pragma once
+#include "../../RasterBuildingCarry.h"
+bool rasterBuildingCarryOn=false; // Explicit App opt-in; old clients keep prior behaviour.
+bool rasterCarriesBuildings=false;
+// Carry/clear can alter the rendered pixels relative to the sender's XOR reference.
+bool rasterDeltaBaseClean=false;
+uint32_t rasterBuildingCarryEpoch=0;
 // 位图地图及罪恶都市轮廓解码。由 MotoNav.ino 按依赖顺序包含，仅编译一次。
 // v2.5 解析图片地图：u16 坐标系, i32 左上角 x, i32 左上角 y, u16 宽, u16 高, u16 每像素毫米, 然后是压缩的颜色编号
 static inline uint16_t blendF(uint16_t a, uint16_t b, uint32_t t);   // v6.1 后面定义
@@ -127,6 +133,7 @@ void prepareVicePalette(const uint16_t *pal) {
 }
 
 void parseRasterLegacy(const uint8_t *p, uint32_t len) {
+  rasterDeltaBaseClean=false;
   rasterValid = false;
   rasterViceValid = false;
   if (len < 16) return;
@@ -239,7 +246,7 @@ bool parseRaster(const uint8_t *p, uint32_t len) {
     return rasterValid;
   }
   if (next.delta) {
-    bool canDelta = rasterValid && !rasterViceValid && !rasHasPal &&
+    bool canDelta = rasterDeltaBaseClean && rasterValid && !rasterViceValid && !rasHasPal &&
         rasterFrame == next.frame && rasW == next.width && rasH == next.height &&
         (uint16_t)lroundf(rasMpp * 1000) == next.mm &&
         rasX0 == next.refX0 && rasY0 == next.refY0 &&
@@ -261,6 +268,11 @@ bool parseRaster(const uint8_t *p, uint32_t len) {
   old.mm=(uint16_t)lroundf(rasMpp*1000); old.blocksWide=rasBW;
   bool keep=rasterValid && !rasterViceValid && !rasHasPal && !next.palette &&
       rasterFrame==next.frame && old.mm==next.mm && rasterAllocatedBytes==RASTER_BUF_BYTES;
+  old.palette=rasHasPal;old.buildings=rasterCarriesBuildings;
+  old.bytes=(size_t)old.blocksWide*((old.height+15)/16)*128;
+  rasterDeltaBaseClean=true;
+  if(keep && rasterBuildingCarryOn && themeIdx==1 && rasterCarryRoofs(rasterBuf,old,rasterBackBuf,next)>0)
+    rasterDeltaBaseClean=false;
   uint8_t *oldPixels=rasterBuf;
   rasterBuf=rasterBackBuf;
   rasterBackBuf=oldPixels;
@@ -272,5 +284,20 @@ bool parseRaster(const uint8_t *p, uint32_t len) {
   rasMpp=next.mm/1000.0f; rasterFrame=next.frame; rasHasPal=next.palette;
   if (next.palette) for (int i=0;i<16;i++) rasPal[i]=rasterU16(p+16+2*i);
   rasterValid=true; rasterAt=millis();
+  rasterCarriesBuildings=next.buildings;
   return true;
+}
+
+void setRasterBuildingCarry(bool on) {
+  rasterBuildingCarryEpoch=mediaConnectionEpoch;
+  rasterBuildingCarryOn=on;
+  if(on) return;
+  if(rasterValid && !rasHasPal && !rasterViceValid) {
+    RasterHeader h={};h.bytes=(size_t)rasBW*((rasH+15)/16)*128;
+    if(h.bytes<=RASTER_BUF_BYTES) rasterClearRoofs(rasterBuf,h);
+    rasterCarriesBuildings=false;
+    rasterDeltaBaseClean=false;
+  }
+  if(rasterBackValid) rasterClearRoofs(rasterBackBuf,rasterBackHeader);
+  navDirty=true;
 }

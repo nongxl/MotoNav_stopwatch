@@ -153,6 +153,10 @@ void setup() {
 
 // 主循环：接收消息、处理输入、调度页面、绘图和推屏。
 void loop() {
+  // New phone/connection must opt in again; old Android/iOS clients are unchanged.
+  if(rasterBuildingCarryEpoch!=mediaConnectionEpoch) {
+    rasterBuildingCarryOn=false;rasterBuildingCarryEpoch=mediaConnectionEpoch;
+  }
   homeClock.tick(millis());
   hidMediaTick();                                      // press/release without blocking navigation
   static uint32_t lyricConnectionEpoch = 0;

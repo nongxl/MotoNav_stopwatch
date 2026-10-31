@@ -2,6 +2,8 @@ import Foundation
 
 /// Match the round display's speed-dependent raster viewport (including its displaced arrow).
 enum MapCoveragePolicy {
+    /// Existing building packets remain usable; extra screenshot passes yield at highway speeds.
+    static func mayCaptureBuildings(kmh:Int)->Bool {kmh<60}
     static func radius(kmh: Int) -> Double {
         let scale = min(0.6, max(0.38, 0.85 - Double(max(0, kmh)) * 0.006))
         return 292 / scale
@@ -12,8 +14,35 @@ enum MapCoveragePolicy {
     static func lookahead(kmh: Int, half: Double = 1200, preferred: Double = 450) -> Double {
         max(0, min(preferred, half - radius(kmh: kmh) - 180))
     }
+    /// Time until the current raster ceases to cover the viewport. Follow the
+    /// actual route through bends; do not assume the present heading is permanent.
+    static func remainingSeconds(x:Double,y:Double,cx:Double,cy:Double,kmh:Int,bearing:Double?,plan:RouteMapPlan?=nil,progress:Double = -1)->Double {
+        let speed=max(120,kmh)
+        guard covers(x:x,y:y,cx:cx,cy:cy,kmh:speed,margin:50) else {return 0}
+        if kmh<6 {return 60}
+        let velocity=Double(kmh)/3.6
+        let point=plan.map{$0.at(progress)}
+        let follow=progress>=0 && point.map{hypot(x-$0.x,y-$0.y)<100} == true
+        for tick in 1...120 {
+            let seconds=Double(tick)/2,delta=velocity*seconds
+            let px:Double,py:Double
+            if follow,let plan=plan,let point=point {
+                let future=plan.at(progress+delta)
+                px=future.x+(x-point.x);py=future.y+(y-point.y)
+            } else if let bearing=bearing {
+                let radians=bearing * .pi/180
+                px=x+sin(radians)*delta;py=y+cos(radians)*delta
+            } else {
+                // With no trustworthy trajectory, use the closest edge.
+                if max(abs(x-cx),abs(y-cy))+delta+radius(kmh:speed)+50>1200 {return max(0,seconds-0.5)}
+                continue
+            }
+            if !covers(x:px,y:py,cx:cx,cy:cy,kmh:speed,margin:50) {return max(0,seconds-0.5)}
+        }
+        return 60
+    }
     static func needsRefresh(x: Double, y: Double, cx: Double, cy: Double, bearing: Double, kmh: Int,
-                             preparationSeconds: Double = 8) -> Bool {
+                             preparationSeconds: Double = 12) -> Bool {
         // Leave time for rendering, processing and BLE delivery before the current map expires.
         let distance = Double(max(0, kmh)) / 3.6 * max(1, min(30, preparationSeconds))
         let angle = bearing * .pi / 180
@@ -65,6 +94,13 @@ struct RouteMapPlan {
     func target(progress: Double, initial: Bool) -> Int {
         max(0, min(nodes.count - 1, Int(floor((progress + (initial ? Self.step / 2 : 800)) / Self.step))))
     }
+    /// Capture a future usable block before it can yet cover the current viewport.
+    /// Projection follows the route through turns rather than extending the current heading.
+    func preparationTarget(progress: Double, kmh: Int) -> Int {
+        let predicted = min(length, max(0, progress) + Double(max(0,kmh))/3.6*12)
+        let point = at(predicted)
+        return displayTarget(progress:predicted,x:point.x,y:point.y,kmh:kmh)
+    }
     func displayTarget(progress: Double, x: Double, y: Double, kmh: Int) -> Int {
         let nearest = target(progress: progress, initial: true), next = min(nodes.count - 1, nearest + 1)
         // Switch to the next overlapping block as soon as it contains the full viewport.
@@ -86,7 +122,8 @@ final class RouteMapCache {
         self.root = root ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("route_maps")
     }
     private func file(frame: MapGeo.Frame, source: Int, buildings: Bool, node: RouteMapPlan.Node, style: Int) -> URL {
-        root.appendingPathComponent("styles-v1-\(style)/\(buildings && source == 3 ? "v2" : "v1")-\(source)-\(buildings ? "buildings" : "base")/\(frame.refLat)_\(frame.refLng)/\(Int(node.x))_\(Int(node.y)).bin")
+        let generation = style == 1 ? 3 : (style == 0 ? 2 : 1)
+        return root.appendingPathComponent("styles-v\(generation)-\(style)/\(buildings && source == 3 ? "v2" : "v1")-\(source)-\(buildings ? "buildings" : "base")/\(frame.refLat)_\(frame.refLng)/\(Int(node.x))_\(Int(node.y)).bin")
     }
     func read(frame: MapGeo.Frame, source: Int, buildings: Bool, node: RouteMapPlan.Node, style: Int = 1) -> Data? {
         lock.lock(); defer { lock.unlock() }
@@ -94,12 +131,25 @@ final class RouteMapCache {
         guard let attrs = try? FileManager.default.attributesOfItem(atPath: url.path),
               let size = attrs[.size] as? NSNumber, (17...480000).contains(size.intValue),
               let data = try? Data(contentsOf: url), RasterPacket.isBuilding(data) == buildings,
-              RasterPacket.valid(data, frame: frame.id, x: Int(node.x - 1200), y: Int(node.y + 1200)) else { return nil }
+              RasterPacket.valid(data, frame: frame.id, x: Int(node.x - 1200), y: Int(node.y + 1200)),
+              MapStyleTransfer.matches(data,style:style),
+              style != 1 || RasterPacket.hasMapContent(data) else { return nil }
         return data
     }
     func store(_ data: Data, frame: MapGeo.Frame, source: Int, node: RouteMapPlan.Node, style: Int = 1) throws {
-        guard RasterPacket.valid(data, frame: frame.id, x: Int(node.x - 1200), y: Int(node.y + 1200)) else { throw MapProcessingError.invalid("离线底图校验失败") }
+        guard RasterPacket.valid(data, frame: frame.id, x: Int(node.x - 1200), y: Int(node.y + 1200)),
+              MapStyleTransfer.matches(data,style:style),
+              style != 1 || RasterPacket.hasMapContent(data) else { throw MapProcessingError.invalid("离线底图校验失败") }
+        guard style != 1 || RasterPacket.hasMapContent(data) else {throw MapProcessingError.invalid("空白底图未写入缓存")}
         lock.lock(); defer { lock.unlock() }
+        // Earlier classified maps include pale-land mesh artifacts. Reclaim them
+        // before enforcing the quota, so a full old cache cannot block its replacement.
+        if style == 0 || style == 1 {
+            for generation in (style == 1 ? [1, 2] : [1]) {
+                let obsolete=root.appendingPathComponent("styles-v\(generation)-\(style)",isDirectory:true)
+                if FileManager.default.fileExists(atPath:obsolete.path) {try FileManager.default.removeItem(at:obsolete)}
+            }
+        }
         let file = file(frame: frame, source: source, buildings: RasterPacket.isBuilding(data), node: node, style: style)
         try FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
         var folder = root
@@ -125,5 +175,61 @@ final class RouteMapCache {
     func sizeText() -> String {
         lock.lock(); defer { lock.unlock() }
         return "离线缓存 \(totalBytesLocked() / 1024 / 1024) MB / 512 MB"
+    }
+}
+
+
+/// Separates capture readiness from display readiness and ATT transfer readiness.
+struct MapHandoffBuffer {
+    struct Packet {
+        let bytes:Data, cx:Double, cy:Double, sat:Bool, type:Int, info:String, source:Int, style:Int
+    }
+    private(set) var pending:Packet?
+    static func mayPrepare(x:Double,y:Double,cx:Double,cy:Double)->Bool {
+        max(abs(x-cx),abs(y-cy)) < 1150
+    }
+    /// A late packet behind the vehicle must not block the current route's next capture.
+    /// Retain early future packets on the actual route, including bends/hairpins.
+    mutating func discardObsolete(x:Double,y:Double,kmh:Int,allowed:[(x:Double,y:Double)])->Bool {
+        guard let p=pending,!allowed.isEmpty else {return false}
+        let usable=MapCoveragePolicy.covers(x:x,y:y,cx:p.cx,cy:p.cy,kmh:max(120,kmh),margin:50)
+        let planned=allowed.contains{abs($0.x-p.cx)<1 && abs($0.y-p.cy)<1}
+        if !usable && !planned {pending=nil;return true}
+        return false
+    }
+    mutating func clear() { pending=nil }
+    mutating func stage(_ packet:Packet) { pending=packet }
+    func contains(cx:Double,cy:Double,style:Int)->Bool {
+        guard let p=pending else {return false}
+        return p.style==style && abs(p.cx-cx)<1 && abs(p.cy-cy)<1
+    }
+    mutating func take(x:Double,y:Double,kmh:Int,style:Int,transferPending:Bool)->Packet? {
+        guard let p=pending else {return nil}
+        guard p.style==style, Self.mayPrepare(x:x,y:y,cx:p.cx,cy:p.cy) else {pending=nil;return nil}
+        guard !transferPending, p.sat || MapCoveragePolicy.covers(x:x,y:y,cx:p.cx,cy:p.cy,kmh:max(120,kmh),margin:50) else {return nil}
+        pending=nil;return p
+    }
+}
+
+
+/// Roads in the near window precede roofs; nearby roofs precede distant road downloads.
+/// A long route must not postpone every building until its last base packet is ready.
+enum RouteMapPreparationPolicy {
+    struct Job {let index:Int, buildings:Bool}
+    static func next(base:[Bool],complete:[Bool],display:Int,target:Int,buildings:Bool,kmh:Int,available:[Bool])->Job? {
+        guard !base.isEmpty,base.count==complete.count,base.count==available.count else {return nil}
+        let d=max(0,min(base.count-1,display)),t=max(d,min(base.count-1,target))
+        let near=Array(d...min(base.count-1,t+2))
+        if let i=near.first(where:{!base[$0] && available[$0]}) {return Job(index:i,buildings:false)}
+        let roadsReady=near.allSatisfy{base[$0]}
+        if buildings && roadsReady {
+            let first=kmh>5 ? t : d
+            let order=[first]+near.filter{$0 != first}
+            if let i=order.first(where:{!complete[$0] && available[$0]}) {return Job(index:i,buildings:true)}
+        }
+        let order=Array(t..<base.count)+Array(0..<t)
+        if let i=order.first(where:{!base[$0] && available[$0]}) {return Job(index:i,buildings:false)}
+        if buildings && roadsReady,let i=order.first(where:{!complete[$0] && available[$0]}) {return Job(index:i,buildings:true)}
+        return nil
     }
 }

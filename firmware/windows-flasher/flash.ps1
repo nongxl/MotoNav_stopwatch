@@ -43,14 +43,14 @@ try {
     if($taskManifest.schema -ne 1 -or $taskManifest.boards.Count -ne 1 -or $taskManifest.boards[0].id -ne '175'){throw '本包仅支持微雪1.75。'}
     $taskBoard=$taskManifest.boards[0]
     $taskVersion=$taskBoard.versions[0]
-    if($taskVersion.version -ne '7.12.10-pages.4'){throw '固件清单版本不匹配。'}
+    if($taskVersion.version -ne '7.12.10-pages.5'){throw '固件清单版本不匹配。'}
     $taskPanel=$taskVersion.panels[0]
     $taskApp=Resolve-PackageFile $taskPanel.app $false
     $taskFullFile=Resolve-PackageFile $taskPanel.full $true
     if(-not(Test-Path -LiteralPath $taskEsp -PathType Leaf)){throw '缺少tools\esptool.exe，请完整解压ZIP。'}
     Write-Host ''
-    Write-Host 'MotoNav 1.75 通用固件 7.12.10-pages.4 一键烧录包' -ForegroundColor Magenta
-    Write-Host '修复开机重启；固定页面与时间；通用品牌开机' -ForegroundColor Cyan
+    Write-Host 'MotoNav 1.75 通用固件 7.12.10-pages.5 一键烧录包' -ForegroundColor Magenta
+    Write-Host '楼块连续保留；固定页面与时间；通用品牌开机' -ForegroundColor Cyan
     if($VerifyOnly){
         & $taskEsp version | Out-Host
         if($LASTEXITCODE -ne 0){throw '烧录工具无法启动。'}

@@ -17,24 +17,26 @@ final class RouteOfflineMaps {
     private let token = MapWorkToken()
     private var jobToken: MapWorkToken?
     private let foregroundBusy: () -> Bool
+    private let currentSpeed: () -> Int
     private let onReady: (RouteMapPlan.Node) -> Void
     private let onStatus: (String) -> Void
     private var ready: [Bool], baseReady: [Bool]
-    private var target = 0, busy = false
-    private var retryAt = Date.distantPast
+    private var target = 0, display = 0, busy = false
+    private var retryAt:[Date]
     private var timer: Timer?
     init(frame: MapGeo.Frame, plan: RouteMapPlan, source: Int, buildings: Bool,
-         foregroundBusy: @escaping () -> Bool, onReady: @escaping (RouteMapPlan.Node) -> Void, onStatus: @escaping (String) -> Void) {
+         foregroundBusy: @escaping () -> Bool, currentSpeed:@escaping ()->Int = {0}, onReady: @escaping (RouteMapPlan.Node) -> Void, onStatus: @escaping (String) -> Void) {
         self.style = Settings.shared.theme
         self.frame = frame; self.plan = plan; self.source = source; self.buildings = buildings
-        self.foregroundBusy = foregroundBusy; self.onReady = onReady; self.onStatus = onStatus
+        self.foregroundBusy = foregroundBusy; self.currentSpeed=currentSpeed; self.onReady = onReady; self.onStatus = onStatus
         ready = [Bool](repeating: false, count: plan.nodes.count); baseReady = ready
+        retryAt=[Date](repeating:.distantPast,count:plan.nodes.count)
     }
     func read(_ node: RouteMapPlan.Node) -> Data? {
         RouteMapCache.shared.read(frame: frame, source: source, buildings: buildings, node: node, style: style)
             ?? (buildings ? RouteMapCache.shared.read(frame: frame, source: source, buildings: false, node: node, style: style) : nil)
     }
-    func update(_ index: Int) { target = max(0, min(plan.nodes.count - 1, index)) }
+    func update(_ index: Int, display:Int) { target = max(0, min(plan.nodes.count - 1, index));self.display=max(0,min(plan.nodes.count-1,display)) }
     func start() {
         busy = true; onStatus("沿线离线地图：检查已有地图包…")
         worker.async {
@@ -53,7 +55,7 @@ final class RouteOfflineMaps {
         }
     }
     private func pump() {
-        if busy, foregroundBusy() { jobToken?.cancel() }
+        if busy,foregroundBusy() {jobToken?.cancel()}
         guard !token.isCancelled, !busy else { return }
         let count = ready.filter { $0 }.count, baseCount = baseReady.filter { $0 }.count
         if count == ready.count {
@@ -63,12 +65,18 @@ final class RouteOfflineMaps {
         guard UIApplication.shared.applicationState == .active else {
             onStatus("沿线离线地图：\(baseCount)/\(ready.count) 块可用；回到 App 前台继续下载"); return
         }
-        guard !foregroundBusy(), Date() >= retryAt else { return }
-        let indexes = Array(target..<ready.count) + Array(0..<target)
-        guard let i = indexes.first(where: { !baseReady[$0] }) ?? indexes.first(where: { !ready[$0] }) else { return }
+        guard !foregroundBusy() else { return }
+        let now=Date()
+        // Preparation is independent of BLE throughput. Nearby roads still win
+        // in RouteMapPreparationPolicy; cache roofs ahead even at highway speed.
+        let prepareRoofs=buildings
+        guard let next=RouteMapPreparationPolicy.next(base:baseReady,complete:ready,display:display,target:target,
+            buildings:prepareRoofs,kmh:currentSpeed(),available:retryAt.map{now >= $0}) else {
+                return
+        }
+        let i=next.index,includeBuildings=next.buildings
         busy = true
         let node = plan.nodes[i]
-        let includeBuildings = buildings && baseCount == baseReady.count
         onStatus("沿线离线地图：\(baseCount)/\(ready.count) 块可用，下载第 \(i + 1) 块\(includeBuildings ? "（补齐建筑）" : "（普通底图优先）")")
         let job = MapWorkToken(); jobToken = job
         worker.async {
@@ -85,7 +93,7 @@ final class RouteOfflineMaps {
                             } catch { /* The final store reports storage errors in onStatus. */ }
                         }, onBuildingStatus: { message in
                             DispatchQueue.main.async { if !self.token.isCancelled { self.onStatus(message) } }
-                        }, style: self.style).bytes
+                        }, style: self.style, preparedBase: includeBuildings ? RouteMapCache.shared.read(frame:self.frame,source:self.source,buildings:false,node:node,style:self.style) : nil).bytes
                 } else {
                     throw MapProcessingError.invalid("沿线预下载仅支持高德底图")
                 }
@@ -100,13 +108,13 @@ final class RouteOfflineMaps {
                 case .success(let packet):
                     self.baseReady[i] = true
                     self.ready[i] = !self.buildings || RasterPacket.isBuilding(packet)
-                    self.retryAt = self.ready[i] || !includeBuildings ? .distantPast : Date().addingTimeInterval(15)
+                    self.retryAt[i] = self.ready[i] || !includeBuildings ? .distantPast : Date().addingTimeInterval(15)
                     self.onReady(node)
                     if !self.ready[i] && includeBuildings { self.onStatus("沿线普通底图已保存；建筑未完成，稍后重试") }
                 case .failure(MapProcessingError.cancelled):
-                    self.retryAt = .distantPast
+                    self.retryAt[i] = .distantPast
                 case .failure(let error):
-                    self.retryAt = Date().addingTimeInterval(15)
+                    self.retryAt[i] = Date().addingTimeInterval(15)
                     self.onStatus("沿线离线地图：\(error.localizedDescription)，保留已保存地图")
                 }
             }

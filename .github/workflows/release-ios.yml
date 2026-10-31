@@ -1,93 +1,122 @@
-name: Build and publish iOS and universal firmware
+name: iOS Build and Verify
 on:
   push:
     branches: [main]
-    paths: [RELEASE_VERSION, .github/workflows/release-ios.yml]
+    paths: ['ios/**', 'scripts/build-ios*.sh', 'build-ios.sh', 'firmware/boards/175/MotoNav/**', '.github/workflows/release-ios.yml']
+  pull_request:
+    paths: ['ios/**', 'scripts/build-ios*.sh', 'build-ios.sh', 'firmware/boards/175/MotoNav/**', '.github/workflows/release-ios.yml']
   workflow_dispatch:
 permissions:
   contents: read
+  actions: read
 concurrency:
-  group: motonav-public-release
-  cancel-in-progress: false
+  group: motonav-ios-${{ github.ref }}
+  cancel-in-progress: true
 jobs:
-  release:
+  ipa:
     runs-on: macos-26
-    timeout-minutes: 45
-    permissions:
-      contents: write
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@v4
+      - name: Verify report export and record recovery
+        run: |
+          swiftc ios/MotoNav/MapReportExport.swift ios/tests/map-export/main.swift -o /tmp/map-export
+          /tmp/map-export
+      - name: Verify map transport and published receiver
+        run: |
+          set -euo pipefail
+          cmp ios/tests/building-continuity/fixture/RasterBuildingCarry.h firmware/boards/175/MotoNav/RasterBuildingCarry.h
+          cmp ios/tests/building-continuity/fixture/RasterContinuity.h firmware/boards/175/MotoNav/RasterContinuity.h
+          cmp ios/tests/building-continuity/fixture/src/map/RasterDecoder.h firmware/boards/175/MotoNav/src/map/RasterDecoder.h
+          swiftc -O ios/MotoNav/MapGeo.swift ios/MotoNav/RasterProcessing.swift ios/MotoNav/BleBulkWriteQueue.swift ios/MotoNav/BleWritePacer.swift ios/tests/map-wire/main.swift -o /tmp/map-wire
+          /tmp/map-wire
+          clang++ -std=c++17 ios/tests/map-wire/receiver.cpp -o /tmp/bulk-receiver
+          /tmp/bulk-receiver
+          clang++ -std=c++17 -O2 ios/tests/building-continuity/main.cpp -o /tmp/building-continuity
+          /tmp/building-continuity
+      - uses: actions/cache/restore@v4
+        id: pods
         with:
-          fetch-depth: 0
-      - name: Detect firmware source changes
-        id: firmware
-        shell: bash
+          path: |
+            ~/Library/Caches/CocoaPods
+            ~/.cocoapods/repos
+          key: ios-pods-${{ runner.os }}-${{ hashFiles('ios/Podfile.lock') }}
+      - name: Reuse previously verified public SDK cache
+        if: steps.pods.outputs.cache-hit != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          PREVIOUS=$(git describe --tags --match 'ios-v*' --abbrev=0 HEAD 2>/dev/null || true)
-          if [[ -n "$PREVIOUS" ]] && git diff --quiet "$PREVIOUS" HEAD -- firmware; then
-            echo "changed=false" >> "$GITHUB_OUTPUT"
+          mkdir -p "$RUNNER_TEMP/LockedSDK" "$HOME/Library/Caches"
+          if gh run download 41173836576 -R zyn950929/MotoNav -n ios-locked-pods-cache -D "$RUNNER_TEMP/LockedSDK"; then
+            tar -xzf "$RUNNER_TEMP/LockedSDK/ios-locked-pods-cache.tar.gz" -C "$HOME/Library/Caches"
           else
-            echo "changed=true" >> "$GITHUB_OUTPUT"
+            echo 'Verified cache unavailable; CocoaPods will download the locked SDK versions.'
           fi
-      - name: Verify arrival lifecycle and callback sessions
-        run: |
-          swiftc ios/MotoNav/ArrivalPolicy.swift ios/tests/arrival/main.swift -o /tmp/arrival
-          /tmp/arrival
-          swiftc ios/MotoNav/ArrivalPolicy.swift ios/MotoNav/NaviSessionCallbacks.swift ios/tests/arrival-relay/SDKStubs.swift ios/tests/arrival-relay/main.swift -o /tmp/arrival-relay
-          /tmp/arrival-relay
-      - name: Install locked iOS dependencies
+      - name: Install locked dependencies
+        timeout-minutes: 10
         working-directory: ios
         run: |
           sudo gem install cocoapods -v 1.16.2 --no-document
           pod _1.16.2_ install --deployment
-      - name: Build unsigned iPhone IPA
-        run: ./scripts/build-ios-ipa.sh
-      - name: Verify iOS data and BLE behavior
+      - uses: actions/cache/save@v4
+        if: success()
+        with:
+          path: |
+            ~/Library/Caches/CocoaPods
+            ~/.cocoapods/repos
+          key: ios-pods-${{ runner.os }}-${{ hashFiles('ios/Podfile.lock') }}
+      - name: Verify navigation, BLE clock and route history
         run: |
-          swiftc -O ios/MotoNav/MapGeo.swift ios/MotoNav/RasterProcessing.swift ios/MotoNav/RouteMapPlan.swift ios/tests/maps/main.swift -o /tmp/maps
-          /tmp/maps
+          set -euo pipefail
+          python3 ios/tests/webmotor/check.py | tee parity-tests.log
+          swiftc ios/MotoNav/ArrivalPolicy.swift ios/tests/arrival/main.swift -o /tmp/arrival
+          /tmp/arrival
+          clang++ -std=c++17 ios/tests/phone-clock/receiver.cpp -o /tmp/clock-receiver
+          /tmp/clock-receiver
+          swiftc ios/MotoNav/AMSMetadata.swift ios/tests/music/main.swift -o /tmp/music
+          /tmp/music
+          swiftc ios/MotoNav/ArrivalPolicy.swift ios/MotoNav/NaviSessionCallbacks.swift ios/tests/arrival-relay/SDKStubs.swift ios/tests/arrival-relay/main.swift -o /tmp/relay
+          /tmp/relay
+          swiftc -O ios/MotoNav/MapGeo.swift ios/MotoNav/RasterProcessing.swift ios/MotoNav/MapStyles.swift ios/tests/four-styles/main.swift -o /tmp/styles
+          /tmp/styles
+          swiftc -O ios/MotoNav/MapGeo.swift ios/MotoNav/RasterProcessing.swift ios/MotoNav/MapStyles.swift ios/MotoNav/RouteMapPlan.swift ios/tests/map-delivery/main.swift -o /tmp/map-delivery
+          /tmp/map-delivery
           swiftc ios/MotoNav/BleBulkWriteQueue.swift ios/MotoNav/BleWritePacer.swift ios/tests/ble-bulk/main.swift -o /tmp/bulk
           /tmp/bulk
-          swiftc ios/MotoNav/BleWritePacer.swift ios/tests/ble-pacing/main.swift -o /tmp/pacing
-          /tmp/pacing
-          python3 -m unittest discover -s firmware/tests -p 'test_*.py'
-      - name: Install ESP32 build tools
-        if: steps.firmware.outputs.changed == 'true'
-        run: |
-          brew install arduino-cli
-          arduino-cli config init
-          arduino-cli config add board_manager.additional_urls https://espressif.github.io/arduino-esp32/package_esp32_index.json
-          arduino-cli core update-index
-          arduino-cli core install esp32:esp32@3.3.10
-      - name: Build universal round-screen firmware
-        if: steps.firmware.outputs.changed == 'true'
-        run: python3 firmware/build.py
-      - name: Package source, firmware and instructions
-        shell: bash
-        run: |
-          VERSION=$(cat RELEASE_VERSION)
-          test -f "output/ios/MotoNav-${VERSION}-unsigned.ipa"
-          git archive --format=zip --prefix=MotoNav/ HEAD > "output/ios/MotoNav-${VERSION}-source.zip"
-          if [[ -d firmware/dist/175/panel0 ]]; then
-            zip -qr "output/ios/MotoNav-universal-firmware-7.12.0.zip" firmware/dist/175/panel0
-          fi
-          cp docs/INSTALL-IOS.md output/ios/INSTALL-IOS.md
-          cp firmware/README.md output/ios/FIRMWARE.md
-          cp "docs/RELEASE-IOS-${VERSION}.md" output/ios/RELEASE-NOTES.md
-          cd output/ios
-          shasum -a 256 *.ipa *.zip *.md > SHA256SUMS.txt
-      - name: Keep build artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: motonav-public-release
-          path: output/ios/
-      - name: Publish GitHub Release
+      - name: Build iPhone Release arm64 and unsigned IPA
         env:
-          GH_TOKEN: ${{ github.token }}
-        shell: bash
+          MOTONAV_DERIVED_DATA: ${{ runner.temp }}/Derived
         run: |
-          VERSION=$(cat RELEASE_VERSION)
-          TAG="ios-v${VERSION}"
-          gh release create "$TAG" --target "$GITHUB_SHA" --title "MotoNav iOS ${VERSION} · 通用圆屏 7.12.0" --notes-file "docs/RELEASE-IOS-${VERSION}.md" --draft
-          gh release upload "$TAG" output/ios/*.ipa output/ios/*.zip output/ios/*.md output/ios/SHA256SUMS.txt
-          gh release edit "$TAG" --draft=false
+          set -o pipefail
+          bash scripts/build-ios-ipa.sh | tee build-ios.log
+      - name: Verify icon and identify artifact
+        id: package
+        run: |
+          set -euo pipefail
+          APP="$RUNNER_TEMP/Derived/Build/Products/Release-iphoneos/MotoNav.app"
+          python3 - "$APP" <<'PY'
+          import pathlib,plistlib,struct,sys,json,hashlib,shutil
+          app=pathlib.Path(sys.argv[1])
+          src=pathlib.Path('ios/MotoNav/Assets.xcassets/AppIcon.appiconset/icon.png')
+          raw=src.read_bytes()
+          assert struct.unpack('>II',raw[16:24])==(1024,1024) and raw[25]==2
+          info=plistlib.loads((app/'Info.plist').read_bytes())
+          assert info['CFBundleIcons']['CFBundlePrimaryIcon']['CFBundleIconName']=='AppIcon'
+          icons=list(app.glob('AppIcon*.png'))
+          assert icons
+          record={'sourceSHA256':hashlib.sha256(raw).hexdigest(),'sourceSize':[1024,1024],'opaqueRGB':True,'compiledIconFiles':[p.name for p in icons],'bundleVersion':info['CFBundleVersion']}
+          pathlib.Path('output/ios/icon-verification.json').write_text(json.dumps(record,indent=2))
+          shutil.copy2(src,'output/ios/icon-preview.png')
+          print('PASS 1024x1024 opaque icon and compiled AppIcon bundle entries')
+          PY
+          echo "version=$(/usr/libexec/PlistBuddy -c 'Print CFBundleShortVersionString' "$APP/Info.plist")" >> "$GITHUB_OUTPUT"
+          echo "build=$(/usr/libexec/PlistBuddy -c 'Print CFBundleVersion' "$APP/Info.plist")" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: MotoNav-iOS-${{ steps.package.outputs.version || 'build' }}-Build${{ steps.package.outputs.build || github.run_number }}
+          path: |
+            output/ios/
+            build-ios.log
+            parity-tests.log
+          if-no-files-found: warn
