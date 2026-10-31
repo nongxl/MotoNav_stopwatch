@@ -172,6 +172,8 @@ object SingleEngineSession {
             File(c.filesDir,"single-engine-preview-enabled").delete()
             File(c.filesDir,"single-engine-simulation-command.json").delete()
             if(stopNative)c.sendBroadcast(Intent("AUTONAVI_STANDARD_BROADCAST_RECV").setPackage(c.packageName).putExtra("KEY_TYPE",10010))
+            FusionCarUi.finishWarm(c, warmToken)
+            FusionCarUi.stopService(c)
         }
         TrafficPositionMonitor.stop();BleLink.send("C");BleLink.clearTrafficLight();BleLink.sendTrafficApproach(0)
         RideRecorder.stop();lifecycle.cancel();MapFeeder.clearSingleEngineRoute()
