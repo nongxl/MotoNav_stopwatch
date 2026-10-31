@@ -504,6 +504,14 @@ void idlePowerOffShutdown() {
   if (StopWatchBoard::ok) {
     StopWatchBoard::ioe.digitalWrite(M5IOE1_PIN_8, 0);
   }
+  // StopWatch：真关机走 M5PM1（0x6E）SYS_CMD=OFF，之后按 PWR 键重新上电。
+  // AXP2101(0x34) 掉电分支是 175 板遗留；StopWatch 板上 0x34 没有设备，永远读不到 0x4A。
+  if (StopWatchBoard::pm1OK) {
+    const m5pm1_err_t result = StopWatchBoard::pm1.shutdown();
+    Serial.printf("Shutdown: PM1 result=%d\n", (int)result);
+    // 真断电则硬件掉电停止执行；能走到这里说明 PM1 不可用或外部 USB 供电还在。
+    if (result == M5PM1_OK) delay(1500);
+  }
   // Check the chip ID, rather than writing to an unknown device at address 0x34.
   const int chip = pmuRead(0x03);
   Serial.printf("Shutdown: PMIC id=%02X, on=%02X, off=%02X\n",
@@ -809,7 +817,12 @@ void loop() {
   const bool navigating = inNav || cruiseOn || idlePowerOffNavigationActive(
       bleConnected && bleAuthed, inNav, cruiseOn, navDir == "A");
   const bool interacting = pairOn || pairReq || callOn || touchDown || dragging || sliding || (page == 4);
-  if (!inNav && idlePowerOffDueOnBattery(&idlePowerOffTimer, millis(), navigating, interacting, &idlePowerSupply)) {
+  // StopWatch：断连满 2 分钟真关机；配对/来电/滑页/伴侣模式均不触发
+  const bool linked = bleConnected;
+  const bool busy = pairOn || pairReq || callOn || sliding || (page == 4);
+  const bool due = idleLinkOffDueOnBattery(&idlePowerOffTimer, millis(), linked, busy, &idlePowerSupply) ||
+                   (!inNav && idlePowerOffDueOnBattery(&idlePowerOffTimer, millis(), navigating, interacting, &idlePowerSupply));
+  if (due) {
     bool queued;
     portENTER_CRITICAL(&mux);
     queued = rxTail != rxHead;
@@ -817,7 +830,8 @@ void loop() {
     if (!queued) {
       // Never decide from the 5-second battery UI cache. Re-read at the deadline.
       idlePowerPollSupply(true);
-      if (!inNav && idlePowerOffDueOnBattery(&idlePowerOffTimer, millis(), navigating, interacting, &idlePowerSupply))
+      if (idleLinkOffDueOnBattery(&idlePowerOffTimer, millis(), linked, busy, &idlePowerSupply) ||
+          (!inNav && idlePowerOffDueOnBattery(&idlePowerOffTimer, millis(), navigating, interacting, &idlePowerSupply)))
         idlePowerOffShutdown();
     }
   }
